@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#ececec" />
+    <meta name="description" content="Aegisub Web subtitle editing, timing, styling, karaoke and media workstation." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Aegisub Web" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <title>Aegisub Web</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --app-bg: #ececec;
+        --app-panel: #ffffff;
+        --app-head: #eeeeee;
+        --app-hover: #d9e8fb;
+        --app-text: #161616;
+        --app-muted: #555b63;
+        --app-border: #aeb4bb;
+        --app-accent: #2876c7;
+        --app-accent-soft: #d7ebff;
+        --app-shadow: 0 4px 14px rgba(0,0,0,.24);
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --app-bg: #17191d;
+        --app-panel: #1d2025;
+        --app-head: #24272d;
+        --app-hover: #31353d;
+        --app-text: #e9ebef;
+        --app-muted: #9aa2ae;
+        --app-border: #373b44;
+        --app-accent: #62a0ff;
+        --app-accent-soft: #213a5e;
+        --app-shadow: 0 14px 38px rgba(0, 0, 0, .38);
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; font-family: "Segoe UI", Tahoma, system-ui, sans-serif; background: var(--app-bg); color: var(--app-text); }
+      button, select { font: inherit; }
+      button { color: inherit; }
+      #app { height: 100%; display: grid; grid-template-rows: 28px 25px 32px minmax(0, 1fr) 22px; padding-top: env(safe-area-inset-top); background: var(--app-bg); }
+      #app.toolbar-hidden { grid-template-rows: 28px 25px 0 minmax(0,1fr) 22px; }
+      .titlebar { min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 7px; background: linear-gradient(#f8f8f8,#e4e4e4); border-bottom: 1px solid #a5a5a5; }
+      .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .brand-mark { width: 18px; height: 18px; flex: none; }
+      .brand-name { display:none; }
+      .filename { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--app-text); }
+      .title-spacer { flex: 1 1 auto; }
+      .title-control { height: 22px; border: 1px solid var(--app-border); border-radius: 2px; background: var(--app-panel); color: var(--app-text); padding: 0 6px; cursor: pointer; font-size: 11px; }
+      .title-settings { display:none; }
+      .icon-control { width: 29px; padding: 0; font-size: 16px; }
+      .install { color: var(--app-accent); font-weight: 600; }
+      .menubar { display: flex; align-items: stretch; gap: 0; padding: 0 4px; background: #f4f4f4; border-bottom: 1px solid #b8b8b8; overflow: visible; position: relative; z-index: 50; }
+      .menu-group { position: relative; display: flex; }
+      .mac-menu { display:none; }
+      :root[data-platform="macos"] .mac-menu { display:flex; }
+      .menu-button { border: 0; background: transparent; padding: 0 7px; font-size: 12px; cursor: pointer; border-radius: 1px; white-space: nowrap; }
+      .menu-button:hover, .menu-button[aria-expanded="true"] { background: var(--app-hover); }
+      .menu-panel { position: absolute; top: 24px; left: 0; width: 262px; max-height: calc(100dvh - 70px); overflow-y: auto; padding: 3px; border: 1px solid #8f8f8f; border-radius: 1px; background: #f7f7f7; box-shadow: var(--app-shadow); z-index: 60; }
+      .menu-panel[hidden] { display: none; }
+      .menu-panel button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 12px; border: 0; border-radius: 1px; padding: 5px 8px 5px 24px; text-align: left; background: transparent; cursor: pointer; font-size: 12px; }
+      .menu-panel button:hover { background: var(--app-hover); }
+      .menu-panel kbd { color: var(--app-muted); font: 10px ui-monospace, monospace; }
+      .menu-sep { height: 1px; background: var(--app-border); margin: 4px 3px; }
+      .quickbar { display: flex; align-items: center; gap: 1px; padding: 2px 4px; background: #ededed; border-bottom: 1px solid #a8a8a8; min-width: 0; overflow-x:auto; scrollbar-width:none; }
+      .quickbar[hidden] { display:none; }
+      .quickbar::-webkit-scrollbar { display:none; }
+      .quick-button { width:27px; height:27px; flex:0 0 27px; display:inline-grid; place-items:center; padding:2px; border:1px solid transparent; border-radius:1px; background:transparent; cursor:pointer; }
+      .quick-button:hover { border-color:#8ba9ca; background:#dcecff; }
+      .quick-button:active { background:#c6def7; }
+      .quick-button img { width:20px; height:20px; object-fit:contain; }
+      .quick-sep { width: 1px; height: 23px; background: #a9a9a9; margin: 0 3px; flex:0 0 1px; }
+      .quick-spacer { flex: 1 1 auto; min-width: 0; }
+      .rate { display: flex; align-items: center; gap: 3px; color: var(--app-muted); font-size: 10px; white-space: nowrap; margin-left:auto; }
+      .rate select { height: 24px; border: 1px solid var(--app-border); border-radius: 1px; background: var(--app-panel); color: var(--app-text); padding: 0 3px; }
+      .format-select{display:flex;align-items:center;gap:3px;font-size:10px;color:var(--app-muted);white-space:nowrap;margin-left:5px}.format-select select{height:24px;max-width:112px;border:1px solid var(--app-border);border-radius:1px;background:#fff;color:#111;padding:0 3px}
+      #editor { min-height: 0; min-width: 0; background: var(--app-panel); }
+      #editor > .se-root > .se-toolbar { display: none; }
+      .statusbar { min-width: 0; display: flex; align-items: center; gap: 12px; padding: 0 7px max(env(safe-area-inset-bottom), 0px); background: #eeeeee; border-top: 1px solid #aaa; color: #3f454c; font-size: 10px; }
+      .statusbar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #status-text { flex: 1; }
+      #drop-overlay { position: fixed; inset: 10px; z-index: 2000; display: grid; place-items: center; border: 2px dashed var(--app-accent); border-radius: 14px; background: color-mix(in srgb, var(--app-panel) 88%, transparent); backdrop-filter: blur(8px); color: var(--app-accent); font-size: 18px; font-weight: 700; pointer-events: none; }
+      #drop-overlay[hidden] { display: none; }
+      #about { width: min(480px, calc(100vw - 24px)); border: 1px solid var(--app-border); border-radius: 12px; padding: 18px; background: var(--app-panel); color: var(--app-text); box-shadow: var(--app-shadow); }
+      #about::backdrop { background: rgba(0,0,0,.55); }
+      #about h2 { font-size: 17px; margin: 0 0 8px; }
+      #about p { font-size: 12px; line-height: 1.55; color: var(--app-muted); }
+      #about a { color: var(--app-accent); }
+      .shell-dialog { width: min(560px, calc(100vw - 24px)); max-height: min(720px, calc(100dvh - 24px)); padding: 0; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-panel); color: var(--app-text); box-shadow: var(--app-shadow); }
+      .shell-dialog::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(3px); }
+      .shell-dialog header { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--app-border); background: var(--app-head); }
+      .shell-dialog h2 { flex: 1; margin: 0; font-size: 15px; }
+      .shell-dialog header button { border: 0; background: transparent; color: inherit; font-size: 20px; cursor: pointer; }
+      .shell-dialog-body { display: flex; flex-direction: column; gap: 9px; padding: 14px; overflow: auto; }
+      .shell-dialog-body label { display: grid; grid-template-columns: 1fr minmax(100px,180px); align-items: center; gap: 10px; font-size: 12px; }
+      .shell-dialog-body input,.shell-dialog-body select,.shell-dialog-body button { min-height: 32px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-panel); color: inherit; padding: 5px 8px; }
+      .shell-dialog-body button { text-align: left; cursor: pointer; }
+      .shell-dialog-body button:hover { border-color: var(--app-accent); }
+      .shell-dialog-body pre { margin: 0; min-height: 180px; overflow: auto; white-space: pre-wrap; font: 11px ui-monospace,monospace; color: var(--app-muted); }
+      .ad-modal,.aa-modal,.ai-modal,.kt-modal,.sp-modal,.se-modal { border-radius:2px!important; border-color:#777!important; box-shadow:0 8px 28px rgba(0,0,0,.35)!important; }
+      .ad-back,.aa-back,.ai-back,.kt-back,.sp-back,.se-modal-back { backdrop-filter:none!important; background:rgba(0,0,0,.34)!important; }
+      :root[data-theme="dark"] .se-root { --se-bg:#1d2025;--se-fg:#e9ebef;--se-muted:#9aa2ae;--se-border:#373b44;--se-sel:#213a5e;--se-sel-fg:#eef5ff;--se-head:#24272d;--se-warn:#f5a524;--se-bad:#ff7373;--se-accent:#62a0ff; }
+      :root[data-theme="light"] .se-root { --se-bg:#fff;--se-fg:#000;--se-muted:#4d4d4d;--se-border:#bebebe;--se-sel:#ceffe7;--se-sel-fg:#000;--se-head:#a5cfe7;--se-warn:#a95d00;--se-bad:#b4232f;--se-accent:#2876c7;--se-active:#ff5bef;--se-inframe:#fffdea;--se-comment:#d8def5;--se-left-col:#c4ecc9; }
+      @media (max-width: 760px) {
+        #app { grid-template-rows: calc(30px + env(safe-area-inset-top)) 30px 42px minmax(0,1fr) calc(24px + env(safe-area-inset-bottom)); padding-top: 0; }
+        #app.toolbar-hidden { grid-template-rows: calc(30px + env(safe-area-inset-top)) 30px 0 minmax(0,1fr) calc(24px + env(safe-area-inset-bottom)); }
+        .titlebar { padding-top: env(safe-area-inset-top); }
+        .brand-name { font-size: 12px; }
+        .filename { font-size: 11px; }
+        .menubar { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+        .menubar::-webkit-scrollbar { display: none; }
+        .menu-group { position: static; flex: 0 0 auto; }
+        .menu-panel { position: fixed; top: calc(66px + env(safe-area-inset-top)); left: 6px; right: 6px; width: auto; max-height: 65vh; overflow: auto; }
+        .quickbar { overflow-x: auto; scrollbar-width: none; }
+        .quickbar::-webkit-scrollbar { display: none; }
+        .quick-button { width:38px;height:38px;flex-basis:38px; }
+        .quick-button img{width:26px;height:26px;}
+        .quick-sep, .quick-spacer { display: none; }
+        .rate { margin-left: auto; }
+        .statusbar { gap: 6px; }
+        #autosave-status { display: none; }
+      }
+      @media (max-width: 430px) {
+        .brand-mark { width: 21px; height: 21px; }
+        .filename { display: none; }
+        .title-control:not(.icon-control) { max-width: 72px; padding: 0 4px; }
+        .install { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header class="titlebar">
+        <div class="brand">
+          <img class="brand-mark" src="./icon.svg" alt="" />
+        </div>
+        <span id="filename" class="filename">welcome.ass - Aegisub Web</span>
+        <span class="title-spacer"></span>
+        <button id="install" class="title-control install title-settings" hidden>安装应用</button>
+        <select id="language" class="title-control title-settings" aria-label="Language">
+          <option value="zh">简体中文</option><option value="en">English</option><option value="ja">日本語</option><option value="fr">Français</option>
+        </select>
+        <button id="theme" class="title-control icon-control title-settings" aria-label="Toggle theme">☾</button>
+      </header>
+
+      <nav class="menubar" aria-label="Application menu">
+        <div class="menu-group"><button class="menu-button" data-menu="menu-file" aria-expanded="false">文件</button><div id="menu-file" class="menu-panel" hidden>
+          <button data-aegisub-command="subtitle/new"><span>新建字幕</span><kbd>Ctrl+N</kbd></button>
+          <button data-aegisub-command="subtitle/open"><span>打开字幕…</span><kbd>Ctrl+O</kbd></button>
+          <button data-aegisub-command="subtitle/open/charset"><span>以指定编码打开…</span><kbd></kbd></button>
+          <button data-aegisub-command="subtitle/open/video"><span>从视频打开字幕</span><kbd></kbd></button>
+          <button data-aegisub-command="subtitle/open/autosave"><span>打开自动保存版本…</span><kbd></kbd></button>
+          <button data-aegisub-command="subtitle/save"><span>保存字幕</span><kbd>Ctrl+S</kbd></button>
+          <button data-aegisub-command="subtitle/save/as"><span>字幕另存为…</span><kbd></kbd></button>
+          <button data-aegisub-command="tool/export"><span>导出字幕 / 滤镜链…</span><kbd></kbd></button>
+          <button data-aegisub-command="recent/subtitle/"><span>最近字幕…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="subtitle/properties"><span>脚本属性…</span><kbd></kbd></button>
+          <button data-aegisub-command="subtitle/attachment"><span>附件管理…</span><kbd></kbd></button>
+          <button data-aegisub-command="tool/font_collector"><span>字体收集器…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-command="save-video"><span>保存字幕轨回视频</span><kbd>Ctrl+Alt+S</kbd></button>
+          <button data-aegisub-command="app/new_window"><span>新建窗口</span><kbd></kbd></button>
+          <button data-aegisub-command="subtitle/close"><span>关闭字幕</span><kbd></kbd></button><button data-aegisub-command="app/exit"><span>退出</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-edit" aria-expanded="false">编辑</button><div id="menu-edit" class="menu-panel" hidden>
+          <button data-aegisub-command="edit/undo"><span>撤销</span><kbd>Ctrl+Z</kbd></button><button data-aegisub-command="edit/redo"><span>重做</span><kbd>Ctrl+Shift+Z</kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="edit/line/cut"><span>剪切字幕行</span><kbd>Ctrl+X</kbd></button><button data-aegisub-command="edit/line/copy"><span>复制字幕行</span><kbd>Ctrl+C</kbd></button><button data-aegisub-command="edit/line/paste"><span>粘贴字幕行</span><kbd>Ctrl+V</kbd></button><button data-aegisub-command="edit/line/paste/over"><span>选择字段覆盖粘贴…</span><kbd></kbd></button>
+          <div class="menu-sep"></div><button data-aegisub-command="subtitle/find"><span>查找…</span><kbd>Ctrl+F</kbd></button><button data-aegisub-command="subtitle/find/next"><span>查找下一个</span><kbd>F3</kbd></button><button data-aegisub-command="edit/find_replace"><span>查找与替换…</span><kbd>Ctrl+H</kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-subtitle" aria-expanded="false">字幕</button><div id="menu-subtitle" class="menu-panel" hidden>
+          <button data-aegisub-command="tool/style/manager"><span>样式管理器…</span><kbd></kbd></button><button data-aegisub-command="tool/style/assistant"><span>样式助手…</span><kbd></kbd></button><button data-aegisub-command="tool/translation_assistant"><span>翻译助手…</span><kbd></kbd></button><button data-aegisub-command="tool/resampleres"><span>重采样分辨率…</span><kbd></kbd></button><button data-aegisub-command="subtitle/spellcheck"><span>拼写检查…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="subtitle/insert/before"><span>在当前行前插入</span><kbd></kbd></button><button data-aegisub-command="subtitle/insert/after"><span>在当前行后插入</span><kbd>Insert</kbd></button><button data-aegisub-command="subtitle/insert/before/videotime"><span>在播放头前插入</span><kbd></kbd></button><button data-aegisub-command="subtitle/insert/after/videotime"><span>在播放头后插入</span><kbd></kbd></button>
+          <button data-aegisub-command="edit/line/duplicate"><span>重复所选行</span><kbd></kbd></button><button data-aegisub-command="edit/line/split/before"><span>在播放头前拆分行</span><kbd>Ctrl+D</kbd></button><button data-aegisub-command="edit/line/split/after"><span>在播放头后拆分行</span><kbd>Ctrl+Shift+D</kbd></button><button data-aegisub-command="edit/line/delete"><span>删除行</span><kbd>Ctrl+Delete</kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="edit/line/join/concatenate"><span>合并（连接文本）</span><kbd></kbd></button><button data-aegisub-command="edit/line/join/keep_first"><span>合并（保留首行）</span><kbd></kbd></button><button data-aegisub-command="edit/line/join/as_karaoke"><span>合并为卡拉 OK</span><kbd></kbd></button><button data-aegisub-command="edit/line/recombine"><span>重组拆分/合并行</span><kbd></kbd></button><button data-aegisub-command="edit/line/split/by_karaoke"><span>按卡拉 OK 拆行</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="grid/sort/start"><span>全部按开始时间排序</span><kbd></kbd></button><button data-aegisub-command="grid/sort/style"><span>全部按样式排序</span><kbd></kbd></button><button data-aegisub-command="grid/sort/start/selected"><span>所选按开始时间排序</span><kbd></kbd></button><button data-aegisub-command="grid/sort/style/selected"><span>所选按样式排序</span><kbd></kbd></button><button data-aegisub-command="grid/swap"><span>交换所选行</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="tool/line/select"><span>按条件选择…</span><kbd></kbd></button><button data-aegisub-command="subtitle/select/all"><span>全选</span><kbd>Ctrl+A</kbd></button><button data-aegisub-command="subtitle/select/visible"><span>选择当前画面可见行</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-timing" aria-expanded="false">时间轴</button><div id="menu-timing" class="menu-panel" hidden>
+          <button data-aegisub-command="time/shift"><span>平移时间…</span><kbd></kbd></button><button data-aegisub-command="time/frame/current"><span>所选行移至当前帧</span><kbd></kbd></button><button data-aegisub-command="time/snap/start_video"><span>开始吸附到播放头</span><kbd>[</kbd></button><button data-aegisub-command="time/snap/end_video"><span>结束吸附到播放头</span><kbd>]</kbd></button><button data-aegisub-command="time/snap/scene"><span>吸附到场景关键帧</span><kbd></kbd></button>
+          <button data-aegisub-command="time/continuous/start"><span>开始接上一行结束</span><kbd></kbd></button><button data-aegisub-command="time/continuous/end"><span>结束接下一行开始</span><kbd></kbd></button><button data-aegisub-command="time/lead/in"><span>添加 Lead-in</span><kbd></kbd></button><button data-aegisub-command="time/lead/out"><span>添加 Lead-out</span><kbd></kbd></button><button data-aegisub-command="time/lead/both"><span>添加 Lead-in/out</span><kbd></kbd></button>
+          <div class="menu-sep"></div><button data-aegisub-command="tool/time/postprocess"><span>Timing Post-Processor…</span><kbd></kbd></button><button data-aegisub-command="tool/time/stitch"><span>拼接相邻时间…</span><kbd></kbd></button><button data-aegisub-command="tool/time/fix_common_errors"><span>修复常见错误…</span><kbd></kbd></button><button data-aegisub-command="keyframe/open"><span>打开关键帧…</span><kbd></kbd></button><button data-aegisub-command="timecode/open"><span>打开 VFR 时间码…</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-video" aria-expanded="false">视频</button><div id="menu-video" class="menu-panel" hidden>
+          <button data-aegisub-command="video/open"><span>打开视频…</span><kbd></kbd></button><button data-aegisub-command="video/open/dummy"><span>使用空白视频…</span><kbd></kbd></button><button data-aegisub-command="video/close"><span>关闭视频</span><kbd></kbd></button><button data-aegisub-command="video/details"><span>视频详情…</span><kbd></kbd></button><button data-aegisub-command="video/detach"><span>画中画 / 分离视频</span><kbd></kbd></button>
+          <button data-aegisub-command="recent/video/"><span>最近视频…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="timecode/open"><span>打开时间码…</span><kbd></kbd></button><button data-aegisub-command="timecode/save"><span>保存时间码…</span><kbd></kbd></button><button data-aegisub-command="timecode/close"><span>关闭时间码</span><kbd></kbd></button><button data-aegisub-command="recent/timecodes/"><span>最近时间码…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="keyframe/open"><span>打开关键帧…</span><kbd></kbd></button><button data-aegisub-command="keyframe/save"><span>保存关键帧…</span><kbd></kbd></button><button data-aegisub-command="keyframe/close"><span>关闭关键帧</span><kbd></kbd></button><button data-aegisub-command="recent/keyframes/"><span>最近关键帧…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="video/zoom/50"><span>缩放 50%</span><kbd></kbd></button><button data-aegisub-command="video/zoom/100"><span>缩放 100%</span><kbd></kbd></button><button data-aegisub-command="video/zoom/200"><span>缩放 200%</span><kbd></kbd></button><button data-aegisub-command="video/aspect/default"><span>默认宽高比</span><kbd></kbd></button><button data-aegisub-command="video/aspect/full"><span>4:3 宽高比</span><kbd></kbd></button><button data-aegisub-command="video/aspect/wide"><span>16:9 宽高比</span><kbd></kbd></button><button data-aegisub-command="video/aspect/custom"><span>自定义宽高比…</span><kbd></kbd></button>
+          <button data-aegisub-command="video/show_overscan"><span>过扫描遮罩</span><kbd></kbd></button><button data-aegisub-command="video/reset_pan"><span>重置平移</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="video/jump"><span>跳转到时间…</span><kbd></kbd></button><button data-aegisub-command="video/jump/start"><span>跳到当前行开始</span><kbd></kbd></button><button data-aegisub-command="video/jump/end"><span>跳到当前行结束</span><kbd></kbd></button><button data-aegisub-command="video/frame/next"><span>下一帧</span><kbd></kbd></button><button data-aegisub-command="video/frame/prev"><span>上一帧</span><kbd></kbd></button><button data-aegisub-command="video/frame/next/keyframe"><span>下一关键帧</span><kbd></kbd></button><button data-aegisub-command="video/frame/prev/keyframe"><span>上一关键帧</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="video/frame/save"><span>保存带字幕 PNG</span><kbd></kbd></button><button data-aegisub-command="video/frame/save/raw"><span>保存原始帧 PNG</span><kbd></kbd></button><button data-aegisub-command="video/frame/save/subs"><span>仅保存透明字幕 PNG</span><kbd></kbd></button><button data-aegisub-command="video/tool/vector_clip"><span>矢量裁剪工具</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-audio" aria-expanded="false">音频</button><div id="menu-audio" class="menu-panel" hidden>
+          <button data-aegisub-command="audio/open"><span>打开音频…</span><kbd></kbd></button><button data-aegisub-command="audio/open/video"><span>使用视频音轨</span><kbd></kbd></button><button data-aegisub-command="audio/close"><span>关闭音频</span><kbd></kbd></button><button data-aegisub-command="recent/audio/"><span>最近音频…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="audio/open/blank"><span>打开 2h30 空白音频</span><kbd></kbd></button><button data-aegisub-command="audio/open/noise"><span>打开 2h30 噪声音频</span><kbd></kbd></button>
+          <button data-aegisub-command="audio/view/waveform"><span>波形视图</span><kbd></kbd></button><button data-aegisub-command="audio/view/spectrum"><span>频谱视图</span><kbd></kbd></button><button data-aegisub-command="audio/save/clip"><span>导出当前行音频片段</span><kbd></kbd></button><button data-aegisub-command="audio/play/line"><span>播放当前行</span><kbd>\</kbd></button><button data-aegisub-command="audio/play/selection/before"><span>播放开始前 500 ms</span><kbd></kbd></button><button data-aegisub-command="audio/play/selection/after"><span>播放结束后 500 ms</span><kbd></kbd></button><button data-aegisub-command="audio/stop"><span>停止</span><kbd>Space</kbd></button><button data-aegisub-command="audio/karaoke"><span>卡拉 OK 模式</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-automation" aria-expanded="false">自动化</button><div id="menu-automation" class="menu-panel" hidden>
+          <button data-aegisub-command="am/manager"><span>Automation 4 管理器…</span><kbd></kbd></button><button data-aegisub-command="am/reload"><span>重新加载扩展</span><kbd></kbd></button><button data-aegisub-command="am/reload/autoload"><span>重新加载自动扩展</span><kbd></kbd></button><button data-command="transcribe"><span>Whisper 转写</span><kbd></kbd></button><button data-command="translate"><span>模型翻译</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-tools" aria-expanded="false">工具</button><div id="menu-tools" class="menu-panel" hidden>
+          <button data-aegisub-command="tool/lyrics_scroll"><span>滚动歌词生成器…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="tool/time/fix_common_errors"><span>修复常见时间错误…</span><kbd></kbd></button><button data-aegisub-command="tool/time/stitch"><span>拼接相邻时间…</span><kbd></kbd></button><button data-aegisub-command="tool/style/overlap_check"><span>样式重叠检查</span><kbd></kbd></button><button data-aegisub-command="tool/text/cleanup"><span>字幕文字清理…</span><kbd></kbd></button><button data-aegisub-command="tool/text/chinese_convert"><span>简繁转换…</span><kbd></kbd></button><button data-aegisub-command="tool/text/pair_check"><span>成对标点检查…</span><kbd></kbd></button><button data-aegisub-command="tool/ai/analysis_settings"><span>AI 语法分析设置…</span><kbd></kbd></button><button data-aegisub-command="tool/text/furigana"><span>日语注音…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="tool/time/kanji"><span>Kanji Timer…</span><kbd></kbd></button><button data-aegisub-command="tool/font_collector"><span>字体收集器…</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-view" aria-expanded="false">视图</button><div id="menu-view" class="menu-panel" hidden>
+          <button data-aegisub-command="app/language"><span>界面语言…</span><kbd></kbd></button><button data-aegisub-command="app/options"><span>设置…</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="app/display/subs"><span>仅字幕</span><kbd></kbd></button><button data-aegisub-command="app/display/video_subs"><span>视频 + 字幕</span><kbd></kbd></button><button data-aegisub-command="app/display/audio_subs"><span>音频 + 字幕</span><kbd></kbd></button><button data-aegisub-command="app/display/full"><span>完整视图</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="grid/tags/show"><span>显示完整标签</span><kbd></kbd></button><button data-aegisub-command="grid/tags/simplify"><span>简化标签</span><kbd></kbd></button><button data-aegisub-command="grid/tags/hide"><span>隐藏标签</span><kbd></kbd></button><div class="menu-sep"></div>
+          <button data-aegisub-command="app/toggle/toolbar"><span>显示/隐藏工具栏</span><kbd></kbd></button><button data-action="theme"><span>切换深浅主题</span><kbd></kbd></button><button data-aegisub-command="app/log"><span>事件日志…</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group mac-menu"><button class="menu-button" data-menu="menu-window" aria-expanded="false">窗口</button><div id="menu-window" class="menu-panel" hidden>
+          <button data-aegisub-command="app/minimize"><span>最小化</span><kbd></kbd></button><button data-aegisub-command="app/maximize"><span>全屏</span><kbd></kbd></button><div class="menu-sep"></div><button data-aegisub-command="app/bring_to_front"><span>前置窗口</span><kbd></kbd></button>
+        </div></div>
+        <div class="menu-group"><button class="menu-button" data-menu="menu-help" aria-expanded="false">帮助</button><div id="menu-help" class="menu-panel" hidden>
+          <button data-aegisub-command="help/contents"><span>使用说明</span><kbd>F1</kbd></button><div class="menu-sep"></div><button data-aegisub-command="help/website"><span>Aegisub 网站</span><kbd></kbd></button><button data-aegisub-command="help/bugs"><span>问题反馈</span><kbd></kbd></button><button data-aegisub-command="help/irc"><span>IRC 支持</span><kbd></kbd></button><button data-aegisub-command="help/video"><span>视觉排版说明</span><kbd></kbd></button><div class="menu-sep"></div><button data-aegisub-command="app/updates"><span>检查更新</span><kbd></kbd></button><button data-aegisub-command="app/about"><span>关于 Aegisub Web</span><kbd></kbd></button><button data-aegisub-command="app/log"><span>事件日志…</span><kbd></kbd></button>
+        </div></div>
+      </nav>
+
+      <div class="quickbar" role="toolbar" aria-label="Quick actions">
+        <button id="new" class="quick-button" title="新建字幕"><img src="./aegisub-icons/new_toolbutton.svg" alt="" /></button>
+        <button id="open" class="quick-button" title="打开字幕"><img src="./aegisub-icons/open_toolbutton.svg" alt="" /></button>
+        <button id="save" class="quick-button" title="保存字幕"><img src="./aegisub-icons/save_toolbutton.svg" alt="" /></button>
+        <span class="quick-sep"></span>
+        <button data-aegisub-command="edit/undo" class="quick-button" title="撤销"><img src="./aegisub-icons/undo_button.svg" alt="" /></button>
+        <button data-aegisub-command="edit/redo" class="quick-button" title="重做"><img src="./aegisub-icons/redo_button.svg" alt="" /></button>
+        <button data-aegisub-command="subtitle/insert/after" class="quick-button" title="插入字幕行"><img src="./aegisub-icons/new_toolbutton.svg" alt="" /></button>
+        <button data-aegisub-command="edit/line/duplicate" class="quick-button" title="重复所选字幕行（保留原时间）"><img src="./aegisub-icons/copy_button.svg" alt="" /></button>
+        <button data-aegisub-command="edit/line/delete" class="quick-button" title="删除字幕行"><img src="./aegisub-icons/delete_button.svg" alt="" /></button>
+        <span class="quick-sep"></span>
+        <button id="open-media" class="quick-button" title="打开视频"><img src="./aegisub-icons/open_video_menu.svg" alt="" /></button>
+        <button data-aegisub-command="video/open/dummy" class="quick-button" title="使用空白视频"><img src="./aegisub-icons/use_dummy_video_menu.svg" alt="" /></button>
+        <button data-aegisub-command="video/jump" class="quick-button" title="跳转到时间"><img src="./aegisub-icons/jumpto_button.svg" alt="" /></button>
+        <button data-aegisub-command="video/zoom/in" class="quick-button" title="放大视频"><img src="./aegisub-icons/zoom_in_button.svg" alt="" /></button>
+        <button data-aegisub-command="video/zoom/out" class="quick-button" title="缩小视频"><img src="./aegisub-icons/zoom_out_button.svg" alt="" /></button>
+        <span class="quick-sep"></span>
+        <button data-aegisub-command="time/snap/start_video" class="quick-button" title="开始时间吸附到视频"><img src="./aegisub-icons/substart_to_video.svg" alt="" /></button>
+        <button data-aegisub-command="time/snap/end_video" class="quick-button" title="结束时间吸附到视频"><img src="./aegisub-icons/subend_to_video.svg" alt="" /></button>
+        <button data-aegisub-command="subtitle/select/visible" class="quick-button" title="选择当前画面字幕"><img src="./aegisub-icons/select_visible_button.svg" alt="" /></button>
+        <button data-aegisub-command="time/snap/scene" class="quick-button" title="吸附到场景"><img src="./aegisub-icons/snap_subs_to_scene.svg" alt="" /></button>
+        <button data-aegisub-command="time/frame/current" class="quick-button" title="平移到当前帧"><img src="./aegisub-icons/shift_to_frame.svg" alt="" /></button>
+        <span class="quick-sep"></span>
+        <button data-aegisub-command="tool/style/manager" class="quick-button" title="样式管理器"><img src="./aegisub-icons/style_toolbutton.svg" alt="" /></button>
+        <button data-aegisub-command="subtitle/properties" class="quick-button" title="脚本属性"><img src="./aegisub-icons/properties_toolbutton.svg" alt="" /></button>
+        <button data-aegisub-command="subtitle/attachment" class="quick-button" title="附件"><img src="./aegisub-icons/attach_button.svg" alt="" /></button>
+        <button data-aegisub-command="tool/font_collector" class="quick-button" title="字体收集器"><img src="./aegisub-icons/font_collector_button.svg" alt="" /></button>
+        <button data-aegisub-command="am/manager" class="quick-button" title="Automation"><img src="./aegisub-icons/automation_toolbutton.svg" alt="" /></button>
+        <span class="quick-sep"></span>
+        <button data-aegisub-command="time/shift" class="quick-button" title="平移时间"><img src="./aegisub-icons/shift_times_toolbutton.svg" alt="" /></button>
+        <button id="tools" class="quick-button" title="时间与文字工具"><img src="./aegisub-icons/timing_processor_toolbutton.svg" alt="" /></button>
+        <button data-aegisub-command="tool/style/assistant" class="quick-button" title="样式助手"><img src="./aegisub-icons/styling_toolbutton.svg" alt="" /></button>
+        <button data-aegisub-command="tool/translation_assistant" class="quick-button" title="翻译助手"><img src="./aegisub-icons/translation_toolbutton.svg" alt="" /></button>
+        <button data-aegisub-command="subtitle/spellcheck" class="quick-button" title="拼写检查"><img src="./aegisub-icons/spellcheck_toolbutton.svg" alt="" /></button>
+        <span class="quick-spacer"></span>
+        <label class="format-select">格式 <select id="app-format"><option value="srt">SRT</option><option value="vtt">VTT</option><option value="ass">ASS</option><option value="sub">MicroDVD</option><option value="lrc">LRC</option><option value="ttml">TTML</option><option value="sbv">SBV</option><option value="subviewer">SubViewer</option><option value="sami">SAMI</option><option value="mpl2">MPL2</option><option value="ytjson">YouTube JSON</option><option value="spruce">Spruce STL</option><option value="tmp">TMPlayer</option><option value="csv">CSV</option><option value="qttext">QuickTime Text</option><option value="dvdsp">DVD Studio Pro</option><option value="jsonsub">JSON</option><option value="ttxt">TTXT</option></select></label>
+        <label class="rate">速度 <select id="playback-rate"><option>.25</option><option>.5</option><option>.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option><option>3</option><option>4</option></select>×</label>
+      </div>
+
+      <main id="editor"></main>
+      <footer class="statusbar"><span id="status-text">就绪</span><span id="autosave-status">自动保存已启用</span></footer>
+    </div>
+
+    <input id="file" type="file" accept=".srt,.vtt,.ass,.ssa,.sub,.lrc,.ttml,.dfxp,.sbv,.smi,.sami,.mpl,.srv3,.json3,.stl,.csv,.json,.ttxt,.txt" hidden />
+    <input id="media-file" type="file" accept="video/*,audio/*,.mkv,.avi,.mov,.m4v,.mp3,.wav,.flac,.opus,.ogg,.oga,.m4a,.aac,.alac,.caf,.aif,.aiff" hidden />
+    <div id="drop-overlay" hidden>拖入字幕、视频或音频文件</div>
+    <div id="about" popover>
+      <h2>Aegisub Web</h2>
+      <p>基于 samgum/Aegisub 工作流重建的字幕编辑、打轴、样式、卡拉 OK 与媒体工作站。</p>
+      <p>界面图标来自 Aegisub 原项目；第三方组件及许可证详见仓库说明。</p>
+      <p><a href="https://github.com/samgum/aegisub-web" target="_blank" rel="noreferrer">GitHub 源码</a></p>
+    </div>
+    <script type="module" src="./demo.ts"></script>
+  </body>
+</html>

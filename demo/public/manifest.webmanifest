@@ -1,0 +1,39 @@
+{
+  "name": "Aegisub Web",
+  "short_name": "Aegisub Web",
+  "description": "Aegisub-compatible subtitle editing, timing, styling, karaoke and media workstation.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "background_color": "#ececec",
+  "theme_color": "#ececec",
+  "orientation": "any",
+  "categories": ["productivity", "video", "utilities"],
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "text/plain": [".ass", ".ssa", ".srt", ".vtt", ".sub", ".lrc", ".ttml", ".dfxp", ".sbv", ".smi", ".sami", ".mpl", ".srv3", ".json3", ".stl", ".csv", ".json", ".ttxt", ".txt"],
+        "audio/wav": [".wav"],
+        "audio/flac": [".flac"],
+        "audio/ogg": [".ogg", ".oga", ".opus"],
+        "audio/mpeg": [".mp3"],
+        "audio/mp4": [".m4a", ".alac"],
+        "audio/aac": [".aac"],
+        "audio/x-caf": [".caf"],
+        "audio/aiff": [".aif", ".aiff"],
+        "video/mp4": [".mp4", ".m4v", ".mov"],
+        "video/webm": [".webm"],
+        "video/x-matroska": [".mkv"],
+        "video/x-msvideo": [".avi"]
+      }
+    }
+  ]
+}

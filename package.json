@@ -1,0 +1,68 @@
+{
+  "name": "aegisub-web",
+  "version": "2.2.0",
+  "description": "An Aegisub-compatible subtitle workstation for timing, styling, karaoke and media workflows.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/samgum/aegisub-web.git"
+  },
+  "homepage": "https://samgum.github.io/aegisub-web/",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "demo/public/aegisub-icons"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/fix-worker-urls.mjs",
+    "build:demo": "npm run assets && vite build",
+    "typecheck": "node node_modules/tsgo/bin/tsc -p tsconfig.json --noEmit",
+    "assets": "node scripts/copy-octopus-assets.mjs && node scripts/copy-libav-assets.mjs && node scripts/copy-alac-assets.mjs && node scripts/copy-dictionary-assets.mjs",
+    "dev": "npm run assets && vite",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "npm run build:demo && start-server-and-test 'vite preview --port 5174 --strictPort' http://localhost:5174 'cypress run --browser chrome'",
+    "test:platforms": "npm run build:demo && playwright test",
+    "corpus": "node scripts/gen-corpus.mjs",
+    "check:writers": "vitest run src/corpus/write-corpus.test.ts && node scripts/check-writers.mjs",
+    "check:xml": "vitest run src/corpus/write-corpus.test.ts && node scripts/check-xml.mjs",
+    "check:mux": "vitest run src/corpus/mux-corpus.test.ts && node scripts/check-mux.mjs",
+    "check:setup": "node scripts/setup-checks.mjs",
+    "prepare": "tsc -p tsconfig.json && node scripts/fix-worker-urls.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "codem-isoboxer": "^0.3.10",
+    "dictionary-en": "4.0.0",
+    "fengari": "0.1.5",
+    "mediabunny": "https://codeload.github.com/hikashop-nicolas/mediabunny/tar.gz/7b5c4d002be306acbbef1769ce73d07b6e884ef7",
+    "mediaplay": "https://codeload.github.com/hikashop-nicolas/mediaplay/tar.gz/1b0c7fd72f958e0d22c4f040b981ccbab72f7390",
+    "nspell": "2.1.5",
+    "opencc-js": "1.4.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "cypress": "^15.19.0",
+    "start-server-and-test": "^2.1.5",
+    "tsgo": "npm:typescript@^7.0.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.0.0"
+  },
+  "overrides": {
+    "adm-zip": "0.6.0",
+    "sharp": "0.35.4",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.26",
+    "qs": "6.16.0"
+  }
+}

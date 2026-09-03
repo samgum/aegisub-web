@@ -1,0 +1,25 @@
+* text=auto
+*.ts text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+test-corpus/** text eol=lf
+# Byte-preserving fixtures: the CRLF files test newline detection and media is binary.
+test-corpus/crlf.* binary
+test-corpus/bom-crlf.vtt binary
+test-corpus/*.mp4 binary
+test-corpus/*.m4a binary
+test-corpus/*.wav binary
+test-corpus/*.flac binary
+test-corpus/*.opus binary
+test-corpus/*.ogg binary
+test-corpus/*.mp3 binary
+test-corpus/*.aiff binary
+test-corpus/*.caf binary
+vendor/fonts/*.otf binary
+*.cmd text eol=crlf
+*.bat text eol=crlf
