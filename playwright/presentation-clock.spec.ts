@@ -195,3 +195,20 @@ test("rapid same-frame edits always display the LAST drawing, not an earlier res
     finally { await info.attach(`same-frame-${iteration}`, { body: JSON.stringify({ expected, actual: await leftEdge(), frameTimes: await page.evaluate(() => (window as any).canvasFrameMessages) }), contentType: "application/json" }); }
   }
 });
+
+test("stepping immediately at seeked uses the requested target before the compositor catches up", async ({ page }, info) => {
+  const results = [];
+  for (const target of [1, 2, 3]) {
+    const result = await page.evaluate(target => new Promise<{ target: number; oldPresentation: number; nextTime: number }>(resolve => {
+      const h = (window as any).subHandle, video = h.video;
+      video.addEventListener("seeked", () => {
+        const oldPresentation = h.player.getPresentedTime(); h.runAegisubCommand("video/frame/next");
+        resolve({ target, oldPresentation, nextTime: video.currentTime });
+      }, { once: true });
+      h.seekTo(target * 1000);
+    }), target);
+    expect(result.nextTime).toBeCloseTo(target + 1 / 24, 4); results.push(result);
+    await expect.poll(() => page.locator(".se-playerhost video").evaluate((v: HTMLVideoElement) => v.seeking)).toBe(false);
+  }
+  await info.attach("seeked-step", { body: JSON.stringify(results), contentType: "application/json" });
+});

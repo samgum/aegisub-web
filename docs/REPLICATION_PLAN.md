@@ -331,3 +331,10 @@ media pauses immediately, while context suspension is deferred by a 300ms idle i
 Still-playing muted video is not mistaken for idle audio. Unit checks cover rapid replay,
 late initial resume, muted playback and teardown; this is defensive lifecycle hardening,
 not a claim about a proven browser-internal root cause.
+
+Windows CI additionally exposed a seek/step ordering gap: currentTime had reached a
+newly selected line, but its compositor callback still described frame zero, so an
+immediate next-frame command jumped back toward the beginning. All editor seek commands
+and native seeking events now record the pending target; the target is recalculated if
+packet indexing finishes later. Regression checks step synchronously from seeked, before
+the new presentation callback, and repeat the normal grid/video hotkey sequence.

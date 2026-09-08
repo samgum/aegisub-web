@@ -980,6 +980,13 @@ class SubtitleEditor implements SubtitleEditorHandle {
     media.style.maxWidth = "none";
     media.style.maxHeight = "none";
     media.style.objectFit = "fill";
+    const seeking = () => {
+      if (this.video !== media) return;
+      const timeMs = media.currentTime * 1000;
+      if (!this.pendingVideoFrame || Math.abs(this.pendingVideoFrame.timeMs - timeMs) >= 2) this.pendingVideoFrame = { frame: this.frameAtMediaMs(timeMs), timeMs };
+    };
+    media.addEventListener("seeking", seeking);
+    this.mediaCleanup.push(() => media.removeEventListener("seeking", seeking));
     const stage = host.querySelector<HTMLElement>(".ot-media-stage");
     const wrap = host.querySelector<HTMLElement>(".ot-media");
     this.videoHost = host;
@@ -4031,6 +4038,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private seekTo(ms: number, play = false): void {
     this.pendingVideoFrame = null;
     if (this.video) {
+      this.pendingVideoFrame = { frame: this.frameAtMediaMs(ms), timeMs: ms };
       this.video.currentTime = ms / 1000;
       if (play) { this.audio.prepareOutput(); void this.video.play().catch(() => {}); }
       else {
@@ -4717,6 +4725,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       if (controller.signal.aborted) return;
       this.videoFrameIndex = index;
       this.frameRate = index.frameRate;
+      if (this.pendingVideoFrame) this.pendingVideoFrame.frame = this.frameAtMediaMs(this.pendingVideoFrame.timeMs);
       this.root.dataset.frameIndex = "ready";
       this.root.dataset.videoFrames = String(index.startsMs.length);
       this.updateVideoChrome();
@@ -4750,14 +4759,17 @@ class SubtitleEditor implements SubtitleEditorHandle {
     return VideoFrameIndex.frameAtTime(this.frameTimes, timeMs);
   }
 
+  private frameAtMediaMs(timeMs: number): number {
+    const raw = this.videoFrameIndex?.startsMs ?? [];
+    return raw.length ? VideoFrameIndex.frameAtTime(raw, timeMs)
+      : this.dummyFrameCount ? Math.max(0, Math.min(this.dummyFrameCount - 1, Math.floor(timeMs * this.frameRate / 1000 + 1e-7))) : this.frameAtMs(timeMs);
+  }
+
   private currentVideoFrame(): number {
     if (!this.video) return 0;
-    const raw = this.videoFrameIndex?.startsMs ?? [];
-    const at = (seconds: number) => raw.length ? VideoFrameIndex.frameAtTime(raw, seconds * 1000)
-      : this.dummyFrameCount ? Math.max(0, Math.min(this.dummyFrameCount - 1, Math.floor(seconds * this.frameRate + 1e-7))) : this.frameAtMs(seconds * 1000);
     if (!this.video.paused) this.pendingVideoFrame = null;
-    if (this.video.seeking) return at(this.video.currentTime);
-    const presented = at(this.player?.getPresentedTime?.() ?? this.video.currentTime);
+    if (this.video.seeking) return this.frameAtMediaMs(this.video.currentTime * 1000);
+    const presented = this.frameAtMediaMs((this.player?.getPresentedTime?.() ?? this.video.currentTime) * 1000);
     if (this.pendingVideoFrame) {
       const pending = this.pendingVideoFrame;
       if (presented !== pending.frame && Math.abs(this.video.currentTime * 1000 - pending.timeMs) < 2) return pending.frame;
