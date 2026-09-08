@@ -411,17 +411,17 @@ test("routes upstream grid, video and edit-box hotkey contexts", async ({ page }
   await page.keyboard.press("d");
   await expect(page.locator('.se-root[data-video-tool="video/tool/rotate/z"]')).toBeVisible();
   await expect(page.locator('.se-video-tool.on[data-video-tool="video/tool/rotate/z"]')).toBeVisible();
-  await expect(page.locator(".se-xform")).toBeVisible();
+  await expect(page.locator('[data-visual-transform="rotate-z"]')).toBeVisible();
   await video.focus();
   await page.keyboard.press("f");
   await expect(page.locator('.se-root[data-video-tool="video/tool/rotate/xy"]')).toBeVisible();
   await expect(page.locator('.se-video-tool.on[data-video-tool="video/tool/rotate/xy"]')).toBeVisible();
-  await expect(page.locator(".se-xform")).toBeVisible();
+  await expect(page.locator('[data-visual-transform="rotate-xy"]')).toBeVisible();
   await video.focus();
   await page.keyboard.press("g");
   await expect(page.locator('.se-root[data-video-tool="video/tool/scale"]')).toBeVisible();
   await expect(page.locator('.se-video-tool.on[data-video-tool="video/tool/scale"]')).toBeVisible();
-  await expect(page.locator(".se-xform")).toBeVisible();
+  await expect(page.locator('[data-visual-transform="scale"]')).toBeVisible();
 
   const textarea = page.locator(".se-detail textarea");
   await textarea.focus();

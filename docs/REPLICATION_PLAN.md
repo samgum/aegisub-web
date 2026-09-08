@@ -53,6 +53,20 @@ remains unverified, as documented in `test-corpus/VFR_ORACLE.md`.
 Dummy video retains its requested virtual CFR clock rather than being reported
 as one frame; its encoder-free implementation is still pending.
 
+Second increment `c539a61` passed all nine target CI jobs ([34180530841](https://github.com/samgum/aegisub-web/actions/runs/34180530841))
+and Pages deployment ([34180749242](https://github.com/samgum/aegisub-web/actions/runs/34180749242)).
+The live site then indexed the 12-frame VFR fixture and displayed the next frame at 0.120001 s.
+
+Third increment: on-video D/F/G rotation/scale gestures using the native angle, pixel-delta,
+axis-lock, aspect-lock and snapping formulas; draggable rotation origin; isolated live ASS
+preview, pointer-up commit, one-step undo and Escape cancellation. First-block tag updates
+preserve nested transforms and later inline overrides. Chromium/Firefox tests verify both
+saved text and actual libass canvas scaling/undo; an Android touch-event test verifies drag
+and returning to the subtitle editor. Current local suite: 369 unit cases, 44 applicable
+browser cases in three profiles (22 explicitly skipped). Native perspective guide rendering,
+move/clip control-point fidelity, origin multi-selection and physical touch acceptance remain
+unfinished; these tools are not marked full parity.
+
 ## Remaining implementation and verification
 
 1. Transport: verify the new frame index/seek path against decoded frame images and native
@@ -61,8 +75,8 @@ as one frame; its encoder-free implementation is still pending.
    export is still 16k mono. Dummy audio still shares the dummy-video generator: replace it.
 2. Native timing: adaptive zoom/scroll, keyframe snapping, playback-follow options, linked
    gain/volume, audio cache policy, full pointer-cancel and repeated-commit edge cases.
-3. Visual typesetting: replace rotation/scale parameter popovers with native on-frame
-   handles and math, including perspective/origin/move/clip and per-frame updates.
+3. Visual typesetting: complete native perspective/origin/move/clip control-point behavior
+   and per-frame guide updates beyond the new on-frame rotation/scale implementation.
 4. ASS preview/fonts: eliminate stale paused-frame renders; compare pixel output with
    desktop libass for Chinese glyphs, weight/name matching, fn overrides, drawings,
    karaoke, transforms, animated clipping and effects. Missing fonts cannot be called exact.

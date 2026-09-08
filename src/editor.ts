@@ -48,6 +48,8 @@ import { Timeline } from "./waveform";
 import { AudioWorkspace, isAudioFile } from "./audio-workspace";
 import { TimingDraft } from "./timing-draft";
 import { VideoFrameIndex, readVideoFrameIndex } from "./video-frame-index";
+import { VisualTransformOverlay } from "./visual-transform-overlay";
+import type { VisualTransformMode } from "./visual-transform";
 import { decodeAudioToMono16k, extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
 import { createEmbeddedPlayer } from "./embedded-player";
 import { extractMp4Subtitles } from "./mp4subs";
@@ -329,6 +331,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private mediaLoadGeneration = 0;
   private activeHotkeyContext: AegisubHotkeyContext = "grid";
   private activeVideoTool = "video/tool/cross";
+  private visualTransform: VisualTransformOverlay | null = null;
   private audio!: AudioWorkspace;
   private audioLoadGeneration = 0;
   private timingDraft = new TimingDraft();
@@ -891,6 +894,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private activateVideoTool(command: string): void {
+    this.visualTransform?.close(); this.visualTransform = null;
     this.activeVideoTool = command;
     this.activeHotkeyContext = "video";
     this.root.dataset.videoTool = command;
@@ -1401,6 +1405,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   // Set the selection to `ids` with `primary` as the detail-edited cue. Refreshes every row
   // whose selected state changed, and re-renders the detail for the primary.
   private setSelection(ids: string[], primary: string): void {
+    this.visualTransform?.refresh();
     const primaryChanged = primary !== this.selectedId;
     if (primaryChanged) {
       this.timingDraft.clear();
@@ -1427,6 +1432,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     // playback and put the playhead on the new line immediately; otherwise audio from the
     // previous line continues while the edit box shows a different one.
     if (primaryChanged && c) this.stopAndSeek(c.startMs);
+    this.visualTransform?.refresh();
   }
 
   // Cmd/Ctrl-click: toggle a cue in/out of the selection.
@@ -2457,6 +2463,45 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const focusTarget = focus === "rotate-xy" ? frx : focus === "scale" ? fscx : frz;
     focusTarget.focus();
     requestAnimationFrame(() => { if (pop.isConnected) focusTarget.focus(); });
+  }
+
+  private openVisualTransform(mode: VisualTransformMode): void {
+    if (!this.video || !this.videoHost || !this.selectedCue()) return;
+    if (this.doc.format !== "ass") { this.toast("视觉排版需要 ASS 字幕。"); return; }
+    if (this.posOverlay) this.exitPosition();
+    if (this.clipOverlay) this.exitClip();
+    if (this.drawOverlay) this.exitDraw();
+    this.vectorClip?.close(); this.vectorClip = null;
+    this.visualTransform?.close();
+    this.detailEl.querySelector(".se-fadepop")?.remove();
+    this.visualTransform = new VisualTransformOverlay({
+      container: this.videoHost,
+      mode,
+      getDoc: () => this.doc,
+      getSelected: () => {
+        const active = this.selectedCue();
+        return active ? [active, ...this.doc.cues.filter(cue => cue.id !== active.id && this.selectedIds.has(cue.id))] : [];
+      },
+      getPictureRect: () => this.videoContentRect(),
+      stop: () => { this.video?.pause(); this.audio.stop(); },
+      preview: (updates) => {
+        window.clearTimeout(this.subtitleTimer);
+        const preview = { ...this.doc, cues: this.doc.cues.map(cue => updates.has(cue.id) ? { ...cue, text: updates.get(cue.id)! } : cue) };
+        this.player?.setSubtitleText(serializeSubtitles(preview), "preview.ass");
+      },
+      commit: (updates) => {
+        if (!this.doc.cues.some(cue => updates.has(cue.id) && updates.get(cue.id) !== cue.text)) return;
+        window.clearTimeout(this.histTimer); this.histTimer = 0;
+        this.history.commit(this.snapshot());
+        for (const cue of this.doc.cues) if (updates.has(cue.id)) { cue.text = updates.get(cue.id)!; this.refreshRow(cue.id); }
+        this.markDirty();
+        window.clearTimeout(this.histTimer); this.histTimer = 0;
+        this.history.commit(this.snapshot());
+        this.renderDetail();
+        this.pushSubtitles(true);
+      },
+      restore: () => this.pushSubtitles(true),
+    });
   }
 
   private timeField(label: string, value: string, onCommit: (v: string) => void): HTMLElement {
@@ -3598,6 +3643,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private clearPlaybackRuntime(): void {
+    this.visualTransform?.close(); this.visualTransform = null;
     this.audio?.bindVideo(null);
     this.playRangeStop?.();
     this.playRangeStop = null;
@@ -5205,9 +5251,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "video/tool/vclip/insert": this.vectorClip?.insert(); return true;
       case "video/tool/vclip/remove": this.vectorClip?.remove(); return true;
       case "video/tool/drag": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue) this.togglePosition(selectedCue); return true;
-      case "video/tool/rotate/z": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue && this.detailTextarea) this.openTransform(selectedCue, this.detailTextarea, "rotate-z"); return true;
-      case "video/tool/rotate/xy": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue && this.detailTextarea) this.openTransform(selectedCue, this.detailTextarea, "rotate-xy"); return true;
-      case "video/tool/scale": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue && this.detailTextarea) this.openTransform(selectedCue, this.detailTextarea, "scale"); return true;
+      case "video/tool/rotate/z": this.setMobilePane("video"); this.activateVideoTool(command); this.openVisualTransform("rotate-z"); return true;
+      case "video/tool/rotate/xy": this.setMobilePane("video"); this.activateVideoTool(command); this.openVisualTransform("rotate-xy"); return true;
+      case "video/tool/scale": this.setMobilePane("video"); this.activateVideoTool(command); this.openVisualTransform("scale"); return true;
       case "video/detach": {
         const candidate = this.video as HTMLVideoElement & { requestPictureInPicture?: () => Promise<unknown> };
         if (candidate?.requestPictureInPicture) void candidate.requestPictureInPicture().catch(() => {});

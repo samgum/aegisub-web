@@ -181,6 +181,12 @@ export function injectStyles(): void {
 .se-audio-button{flex:0 0 27px;width:27px;height:26px;}
 .se-audio-option{display:flex;align-items:center;white-space:nowrap;font-size:11px;gap:2px;padding:0 4px;}
 .se-audio-option input{margin:0;}
+.se-visual-transform{position:absolute;inset:0;z-index:5;touch-action:none;cursor:crosshair;outline:none;}
+.se-visual-transform svg{display:block;overflow:hidden;fill:rgba(160,200,245,.25);stroke:#b1d7ff;stroke-width:1.5;filter:drop-shadow(0 1px 1px #000);}
+.se-visual-transform .se-visual-ring{stroke:#6babec;stroke-width:5;fill:rgba(70,120,200,.08);}
+.se-visual-transform .se-visual-origin-hit{fill:transparent;stroke:none;cursor:move;pointer-events:all;}
+.se-visual-transform [data-origin]{cursor:move;}
+.se-visual-transform .se-visual-readout{fill:white;stroke:none;font:12px system-ui;}
 .se-root[data-timing-pending="true"] .se-times:first-child input{background:#fff4c2;}
 .se-timeline:focus-visible{outline:2px solid #3875d6;outline-offset:-2px;}
 .se-timeline{touch-action:none;cursor:grab;}
