@@ -53,7 +53,7 @@ import { TimingDraft } from "./timing-draft";
 import { VideoFrameIndex, readVideoFrameIndex } from "./video-frame-index";
 import { VisualTransformOverlay } from "./visual-transform-overlay";
 import type { VisualTransformMode } from "./visual-transform";
-import { decodeAudioToMono16k, extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
+import { extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
 import { createEmbeddedPlayer } from "./embedded-player";
 import { createNativeVideoPlayer } from "./native-video-player";
 import { indexedFrameSeconds } from "./presentation-time";
@@ -87,7 +87,7 @@ import { resolveAegisubContextHotkey, resolveAegisubDefaultHotkey, resolveAegisu
 import { listAutomationExtensions, runAutomationExtension } from "./automation";
 import { runLuaAutomation } from "./lua-automation";
 import { openVectorClip, type VectorClipHandle, type VectorClipMode } from "./vector-clip";
-import { computeSpectrum, computeDummySpectrum, type SpectrumData } from "./spectrum";
+import { computeSpectrum, type SpectrumData, type SpectrumViewport } from "./spectrum";
 import { createDummyVideoPlayer, parseDummyFrameRate, type DummyVideoElement, type DummyVideoOptions } from "./dummy-video";
 import {
   openExportDialog,
@@ -382,10 +382,11 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private mediaFile: File | null = null; // the original file; streamed from disk (never held whole in RAM)
   private mediaContainer: "mkv" | "mp4" = "mp4"; // detected at load, for save-into-video
   private subtitleFileHandle: FileSystemFileHandle | null = null;
-  private decodedMono16k: Float32Array | null = null;
   private spectrumData: SpectrumData | null = null;
   private spectrumRequest = 0;
   private spectrumCancel: (() => void) | null = null;
+  private spectrumViewportTimer = 0;
+  private pendingSpectrumViewport: SpectrumViewport | null = null;
   private audioViewMode: "waveform" | "spectrum" = "waveform";
   private timeline: Timeline | null = null;
   private audioAdjustments: AudioAdjustments | null = null;
@@ -866,6 +867,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       ],
       onZoom: level => this.audioAdjustments?.setZoom(level),
       onWaveformViewport: viewport => this.requestWaveformViewport(viewport),
+      onSpectrumViewport: viewport => this.requestSpectrumViewport(viewport),
       onVideoSeek: seconds => this.stopAndSeek(seconds * 1000),
       followPlayback: () => localStorage.getItem("aegisub-web.audio-lock-cursor") === "true",
       getSelectedId: () => this.selectedId,
@@ -3775,6 +3777,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (generation !== this.audioLoadGeneration || !ready) return;
     this.audio.bindVideo(this.video);
     this.setPlaybackRate(this.getPlaybackRate());
+    this.timeline?.resetSpectrumRequest();
     this.timeline?.render();
     this.scrollAudioSelectionIntoView();
     const blob = this.audio.analysisBlob;
@@ -3809,7 +3812,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.spectrumRequest++;
     this.waveAbort?.abort();
     this.waveAbort = null;
-    this.decodedMono16k = null;
+    window.clearTimeout(this.spectrumViewportTimer); this.spectrumViewportTimer = 0; this.pendingSpectrumViewport = null;
+    delete this.root.dataset.spectrumViewport;
     this.spectrumCancel?.();
     this.spectrumCancel = null;
     this.spectrumData = null;
@@ -4308,37 +4312,41 @@ class SubtitleEditor implements SubtitleEditorHandle {
     }
   }
 
-  private async showAudioView(view: "waveform" | "spectrum"): Promise<void> {
-    const request = ++this.spectrumRequest;
+  private showAudioView(view: "waveform" | "spectrum"): void {
+    this.spectrumRequest++;
     this.spectrumCancel?.(); this.spectrumCancel = null;
+    window.clearTimeout(this.spectrumViewportTimer); this.spectrumViewportTimer = 0;
     this.setMobilePane("audio");
     this.audioViewMode = view;
-    if (view === "waveform") { this.timeline?.setAudioView("waveform"); this.setWaveStatus(""); return; }
-    if (this.spectrumData) { this.timeline?.setSpectrum(this.spectrumData); return; }
-    if (!this.audio.analysisBlob && !this.audio.synthetic) { this.toast("请先加载音频。"); return; }
-    const generation = this.audioLoadGeneration;
-    const current = () => generation === this.audioLoadGeneration && request === this.spectrumRequest;
-    const progress = (ratio: number) => { if (current()) this.setWaveStatus(`频谱 ${Math.round(ratio * 100)}%`); };
-    try {
-      this.setWaveStatus("正在计算频谱…");
-      let run: ReturnType<typeof computeSpectrum>;
-      if (this.audio.synthetic) run = computeDummySpectrum(this.audio.synthetic.kind, this.audio.duration, this.audio.synthetic.sampleRate, progress);
-      else {
-        const decoded = this.decodedMono16k ?? await decodeAudioToMono16k(this.audio.analysisBlob!, { durationHint: this.audio.duration || undefined });
-        if (!current()) return;
-        this.decodedMono16k = decoded;
-        run = computeSpectrum(decoded, 16000, progress);
-      }
-      this.spectrumCancel = run.cancel;
-      const data = await run.done;
-      if (!current()) return;
-      this.spectrumData = data;
-      this.timeline?.setSpectrum(data);
-    } catch (error) {
-      if (current() && !(error instanceof DOMException && error.name === "AbortError")) this.toast(error instanceof Error ? error.message : String(error));
-    } finally {
-      if (current()) { this.spectrumCancel = null; this.setWaveStatus(""); }
+    if (view === "spectrum") {
+      this.waveformViewportAbort?.abort(); this.waveformViewportAbort = null;
+      window.clearTimeout(this.waveformViewportTimer); this.waveformViewportTimer = 0;
     }
+    this.setWaveStatus(""); this.timeline?.setAudioView(view);
+    if (view === "spectrum" && this.spectrumData) this.timeline?.setSpectrum(this.spectrumData);
+  }
+
+  private requestSpectrumViewport(viewport: SpectrumViewport): void {
+    this.pendingSpectrumViewport = viewport;
+    if (this.spectrumViewportTimer) return;
+    this.spectrumViewportTimer = window.setTimeout(async () => {
+      this.spectrumViewportTimer = 0;
+      const file = this.audio.analysisBlob, synthetic = this.audio.synthetic?.kind, view = this.pendingSpectrumViewport;
+      if ((!file && !synthetic) || !this.audio.element || !view || this.audioViewMode !== "spectrum") return;
+      this.spectrumCancel?.();
+      const request = ++this.spectrumRequest, generation = this.audioLoadGeneration;
+      const current = () => request === this.spectrumRequest && generation === this.audioLoadGeneration && this.audioViewMode === "spectrum";
+      this.root.dataset.spectrumViewport = "loading";
+      try {
+        const run = computeSpectrum(file, view, synthetic, ratio => { if (current()) this.setWaveStatus(`频谱 ${Math.round(ratio * 100)}%`); });
+        this.spectrumCancel = run.cancel;
+        const data = await run.done;
+        if (!current()) return;
+        this.spectrumData = data; this.root.dataset.spectrumViewport = "ready"; this.timeline?.setSpectrum(data);
+      } catch (error) {
+        if (current()) { this.root.dataset.spectrumViewport = "error"; this.toast(error instanceof Error ? error.message : String(error)); }
+      } finally { if (current()) { this.spectrumCancel = null; this.setWaveStatus(""); } }
+    }, 80);
   }
 
   private async captureVideoFrame(mode: "with-subs" | "raw" | "subs", clipboard: boolean): Promise<void> {
@@ -5349,7 +5357,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
         return true;
       }
       case "audio/opt/vertical_link": this.audioAdjustments?.toggleLink(); return true;
-      case "audio/options": openAudioTimingOptions(() => this.timeline?.render()); return true;
+      case "audio/options": openAudioTimingOptions(() => this.timeline?.refreshAudioOptions()); return true;
       case "audio/opt/spectrum": void this.showAudioView(this.audioViewMode === "spectrum" ? "waveform" : "spectrum"); return true;
       case "audio/karaoke": {
         this.setMobilePane("audio");
@@ -5677,7 +5685,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.mediaFile = null;
     this.audioLoadGeneration++;
     this.audio.destroy();
-    this.decodedMono16k = null;
+    window.clearTimeout(this.spectrumViewportTimer);
     this.wavePeaks = null;
     this.timeline?.destroy();
     this.timeline = null;

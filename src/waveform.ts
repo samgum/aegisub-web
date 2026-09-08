@@ -7,7 +7,7 @@
 import type { Cue } from "./cue";
 import { AudioTimingGesture } from "./audio-timing-gesture";
 import { audioFlag, audioNumber, audioTimingCues, audioZoomFactor } from "./audio-options";
-import type { SpectrumData } from "./spectrum";
+import { spectrumPalette, spectrumRows, spectrumRowValue, spectrumViewKey, type SpectrumData, type SpectrumViewport } from "./spectrum-core";
 import { waveformViewKey, type WaveformValues, type WaveformPixels, type WaveformViewport } from "./waveform-data";
 
 export interface TimelineCallbacks {
@@ -19,6 +19,7 @@ export interface TimelineCallbacks {
   getKeyframesMs?: () => readonly number[];
   onZoom?: (level: number) => void;
   onWaveformViewport?: (viewport: WaveformViewport) => void;
+  onSpectrumViewport?: (viewport: SpectrumViewport) => void;
   onVideoSeek?: (seconds: number) => void;
   followPlayback?: () => boolean;
   getSelectedId: () => string | null;
@@ -71,6 +72,8 @@ export class Timeline {
   private waveformPixelCache: WaveformPixels[] = [];
   private waveformRequest = "";
   private spectrum: SpectrumData | null = null;
+  private spectrumCache: SpectrumData[] = [];
+  private spectrumRequest = "";
   private audioView: "waveform" | "spectrum" = "waveform";
   private pal!: Palette;
   private ro: ResizeObserver | null = null;
@@ -160,18 +163,34 @@ export class Timeline {
   }
 
   clearSpectrum(): void {
-    this.spectrum = null;
+    this.spectrum = null; this.spectrumCache = []; this.spectrumRequest = "";
+    this.canvas.dataset.spectrumResolution = "none";
     this.render();
   }
 
+  resetSpectrumRequest(): void { this.spectrumRequest = ""; }
+
+  private trimSpectrumCache(): void {
+    const budget = audioNumber("spectrum-memory", 128, 2, 1024) * 1024 * 1024;
+    const bytes = () => this.spectrumCache.reduce((sum, data) => sum + data.values.byteLength + data.blockIndexes.byteLength + data.pixelColumns.byteLength, 0);
+    // The active working tile must remain drawable. The budget bounds retained
+    // neighbours; one unusually large active tile may itself exceed a small budget.
+    while (this.spectrumCache.length > 1 && (bytes() > budget || this.spectrumCache.length > 2)) this.spectrumCache.shift();
+  }
+  refreshAudioOptions(): void { this.trimSpectrumCache(); this.render(); }
+
   setSpectrum(spectrum: SpectrumData): void {
-    this.spectrum = spectrum;
+    const key = spectrumViewKey(spectrum.viewport);
+    this.spectrumCache = [...this.spectrumCache.filter(item => spectrumViewKey(item.viewport) !== key), spectrum];
+    this.trimSpectrumCache();
     this.audioView = "spectrum";
     this.canvas.dataset.audioView = "spectrum";
     this.render();
   }
 
   setAudioView(view: "waveform" | "spectrum"): void {
+    this.spectrumRequest = "";
+    if (view === "waveform") this.waveformRequest = "";
     this.audioView = view;
     this.canvas.dataset.audioView = view;
     this.render();
@@ -297,7 +316,7 @@ export class Timeline {
     ctx.fillRect(0, 0, w, h);
 
     this.drawRuler();
-    if (this.audioView === "spectrum" && this.spectrum) this.drawSpectrum();
+    if (this.audioView === "spectrum") this.drawSpectrum();
     else this.drawWaveform();
     this.drawCues();
 
@@ -394,23 +413,41 @@ export class Timeline {
   }
 
   private drawSpectrum(): void {
+    const startPixel = Math.floor(this.scrollSec * this.pxPerSec), logicalWidth = Math.ceil(this.width);
+    const quality = Math.round(audioNumber("spectrum-quality", 1, 0, 3));
+    this.spectrum = this.spectrumCache.find(item => item.viewport.quality === quality && item.viewport.pixelsPerSecond === this.pxPerSec
+      && item.viewport.startPixel <= startPixel && item.viewport.startPixel + item.viewport.width >= startPixel + logicalWidth) ?? null;
     const spectrum = this.spectrum;
-    if (!spectrum) return;
-    const top = RULER_H + 1;
-    const height = Math.max(1, Math.round((this.height - top) * this.dpr));
-    const width = Math.max(1, Math.round(this.width * this.dpr));
-    const image = this.ctx.createImageData(width, height);
-    for (let x = 0; x < width; x += 1) {
-      const time = this.secOf(x / this.dpr);
-      const column = Math.max(0, Math.min(spectrum.columns - 1, Math.floor(time * spectrum.columnsPerSecond)));
-      for (let y = 0; y < height; y += 1) {
-        const bin = Math.max(0, Math.min(spectrum.bins - 1, Math.floor((1 - y / height) * spectrum.bins)));
-        const value = Math.max(0, Math.min(1, spectrum.values[column * spectrum.bins + bin] / 255 + 20 * Math.log10(Math.max(.000001, this.amplitude)) / 75));
+    if (!spectrum && this.cb.onSpectrumViewport) {
+      const tile = Math.floor(startPixel / 128) * 128;
+      const view = { startPixel: tile, width: Math.ceil((startPixel - tile + logicalWidth + 128) / 128) * 128, pixelsPerSecond: this.pxPerSec, quality };
+      const key = spectrumViewKey(view);
+      if (key !== this.spectrumRequest) { this.spectrumRequest = key; this.cb.onSpectrumViewport(view); }
+    }
+    this.canvas.dataset.spectrumResolution = spectrum ? "samples" : "pending";
+    if (spectrum) { this.canvas.dataset.spectrumSampleRate = String(spectrum.parameters.sampleRate); this.canvas.dataset.spectrumFftSize = String(spectrum.parameters.fftSize); }
+    const top = RULER_H + 1, height = Math.max(1, Math.round((this.height - top) * this.dpr)), width = Math.max(1, Math.round(this.width * this.dpr));
+    const image = this.ctx.createImageData(width, height), styles = new Uint8Array(width);
+    const active = this.cb.getSelectedId(), selected = new Set(this.cb.getSelectedIds?.() ?? []), cues = this.timingCues();
+    for (const priority of [1, 2, 3]) for (const cue of cues) {
+      const style = cue.id === active ? 3 : selected.has(cue.id) ? 2 : 1;
+      if (style !== priority) continue;
+      const left = Math.max(0, Math.floor(this.xOf(cue.startMs / 1000) * this.dpr)), right = Math.min(width, Math.floor(this.xOf(cue.endMs / 1000) * this.dpr));
+      if (right > left) styles.fill(style, left, right);
+    }
+    const curve = Math.round(audioNumber("spectrum-curve", 0, 0, 4));
+    const rows = spectrum ? spectrumRows(spectrum.parameters, height, curve) : [];
+    const scheme = localStorage.getItem("aegisub-web.audio-spectrum-scheme") === "Green" ? "Green" : "Icy Blue";
+    const palettes = [0, 1, 2, 3].map(style => spectrumPalette(style, scheme));
+    for (let x = 0; x < width; x++) {
+      const pixel = startPixel + Math.floor(x / this.dpr);
+      const column = spectrum ? spectrum.pixelColumns[pixel - spectrum.viewport.startPixel] : -1;
+      const palette = palettes[styles[x]];
+      for (let y = 0; y < height; y++) {
+        const power = spectrum && column >= 0 ? spectrumRowValue(spectrum.values, column * spectrum.bins, rows[height - y - 1]) : 0;
+        const index = Math.max(0, Math.min(4096, Math.trunc(Math.fround(Math.fround(power * Math.fround(this.amplitude)) * 4096)))) * 3;
         const offset = (y * width + x) * 4;
-        image.data[offset] = Math.round(18 + value ** 1.6 * 237);
-        image.data[offset + 1] = Math.round(28 + Math.sin(value * Math.PI) * 150);
-        image.data[offset + 2] = Math.round(55 + (1 - value) * 120);
-        image.data[offset + 3] = Math.round(35 + value * 190);
+        image.data[offset] = palette[index]; image.data[offset + 1] = palette[index + 1]; image.data[offset + 2] = palette[index + 2]; image.data[offset + 3] = 255;
       }
     }
     this.ctx.putImageData(image, 0, Math.round(top * this.dpr));
@@ -429,7 +466,7 @@ export class Timeline {
     });
     // Dialogue mode supplies ranges and markers, not cue-text labels or ASS fade shapes.
     // Karaoke has its own syllable editor; ordinary timing must not obscure the waveform.
-    for (const cue of cues) {
+    if (this.audioView !== "spectrum") for (const cue of cues) {
       const { x0, x1 } = this.cueRect(cue);
       ctx.fillStyle = this.pal.cue;
       ctx.globalAlpha = cue.id === active ? .18 : selected.has(cue.id) ? .1 : .04;
@@ -463,7 +500,7 @@ export class Timeline {
     const x = this.xOf(this.cb.getCurrentTime());
     if (x < 0 || x > this.width) return;
     const ctx = this.ctx;
-    ctx.strokeStyle = this.pal.playhead;
+    ctx.strokeStyle = this.audioView === "spectrum" ? "#ffffff" : this.pal.playhead;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(x, 0);

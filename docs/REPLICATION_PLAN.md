@@ -443,3 +443,28 @@ frames / zero dropped frames, zero whole-file reads, and a 618x347 subtitle canv
 the native-only baseline recorded 158 / zero. An earlier concurrent run missed the
 unchanged 5% dropped-frame gate and shut down a shared server under the WebKit run;
 those results are not treated as valid isolated performance/platform acceptance.
+
+## Source-rate spectrum (current increment)
+
+The waveform increment finished on `ce78e64` with all nine CI jobs passing
+([34226112573](https://github.com/samgum/aegisub-web/actions/runs/34226112573)).
+This increment removes the spectrum's full-track 16 kHz ASR decode/cache and replaces
+the fixed Hann-window byte image with a streamed, native-formula FFT viewport cache.
+The source-derived non-FFTW FFT, scaling, 20 kHz/Nyquist cutoff, five frequency mapping
+presets, four quality settings and Icy Blue/Green rendering priorities are covered
+by the original C++ FFT/colour code and the native row formulas.
+
+Quality changes request new FFT data; gain, frequency mapping, colour and cached
+panning repaint existing data. Mode/source changes cancel pending jobs. The existing
+waveform default is retained; this is not a claim that every desktop default or the
+FFTW-enabled quality upgrade is replicated. Provider mixing/endpoints, native GUI
+identity and real-device acceptance remain open. See
+`test-corpus/NATIVE_SPECTRUM_ORACLE.md` for exact scope and verification thresholds.
+
+Local verification: 535 unit cases pass (11 existing skips), 68 Cypress cases pass,
+214 Chromium/Firefox/Android cases pass (35 explicit skips), and all nine dedicated
+WebKit spectrum checks pass. GCC and MSVC agree on 24 original-FFT vectors, 32 colours
+and 30 frequency maps within the documented float tolerance. With spectrum enabled,
+the isolated 3840x2160 fixture records 155 frames / zero drops, zero whole-file reads
+and a 618x347 subtitle canvas; the native-only baseline records 159 / zero. This is
+a fixture-specific regression check, not universal 4K hardware/codec acceptance.

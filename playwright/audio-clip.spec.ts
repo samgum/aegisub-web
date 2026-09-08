@@ -57,7 +57,7 @@ test("exports noncontiguous saved rows as one range, without applying pending ti
   expect(mismatches).toBe(0);
   expect(await page.evaluate(() => { const h = (window as any).subHandle; return { doc: h.getDoc(), selected: [...h.selectedIds], time: h.audio.currentTime }; })).toEqual(before);
   expect(await page.evaluate(() => (window as any).subHandle.timingDraft.pending)).toBe(true);
-  expect(await page.evaluate(() => (window as any).subHandle.decodedMono16k)).toBeNull();
+  expect(await page.evaluate(() => "decodedMono16k" in (window as any).subHandle)).toBe(false);
 });
 
 test("44.1 kHz export starts at ceil(sample), and beyond EOF yields an empty valid WAV", async ({ page }) => {

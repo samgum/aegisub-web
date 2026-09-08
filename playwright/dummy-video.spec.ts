@@ -88,6 +88,7 @@ test("blank and noise audio are independent procedural sources, and noise actual
   expect(await page.evaluate(() => (window as any).subHandle.audio.synthetic.level())).toBe(0);
   await page.evaluate(() => (window as any).subHandle.runAegisubCommand("audio/view/spectrum"));
   await expect(page.locator(".se-timeline")).toHaveAttribute("data-audio-view", "spectrum");
+  await expect(page.locator(".se-timeline")).toHaveAttribute("data-spectrum-resolution", "samples");
   expect(await page.evaluate(() => (window as any).subHandle.spectrumData.values.some((v: number) => v !== 0))).toBe(false);
   await page.evaluate(async () => {
     const editor = (window as any).subHandle;

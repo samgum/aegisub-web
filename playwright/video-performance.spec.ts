@@ -54,6 +54,10 @@ test("4K playback uses disk-backed input and display-sized subtitles", async ({ 
   // The fixture's resolution differs from the script; explicitly retain the script dimensions.
   const ignore = page.getByRole("button", { name: /^(Ignore|忽略)$/ }); await expect(ignore).toBeVisible(); await ignore.click();
   await expect(root).toHaveAttribute("data-waveform-decoder", "worker-ready", { timeout: 30000 });
+  if (process.env.AEGISUB_4K_AUDIO_VIEW === "spectrum") {
+    await page.evaluate(() => (window as any).subHandle.runAegisubCommand("audio/view/spectrum"));
+    await expect(page.locator(".se-timeline")).toHaveAttribute("data-spectrum-resolution", "samples");
+  }
   await video.evaluate((v: HTMLVideoElement) => { v.currentTime = 0; });
   await video.evaluate((v: HTMLVideoElement) => v.play());
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 15000 }).toBeGreaterThan(4);

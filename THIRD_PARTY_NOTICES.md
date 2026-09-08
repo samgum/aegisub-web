@@ -26,6 +26,11 @@ The PCM conversion and clip-writing algorithms in `src/audio-clip-pcm.ts` follow
 `libaegisub/audio/provider.cpp` and `provider_convert.cpp` at the same pin. Their
 Copyright (c) 2014 Thomas Goyne permissive notice and disclaimer are retained in that file.
 
+The spectrum FFT, frequency mapping and palettes follow the pinned Aegisub renderer.
+`vendor/LICENSE-AEGISUB-SPECTRUM.txt` preserves their BSD notices and is copied to the
+site's `audio-codecs/AEGISUB-SPECTRUM.txt`. The native test fixture retains the original
+`fft.cpp` and `fft.h`; its small exception adapter is only for compiling the oracle.
+
 ## Vendored translation worker
 
 `src/localml/` is adapted from `hikashop-nicolas/localml`, commit

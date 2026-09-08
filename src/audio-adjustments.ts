@@ -53,7 +53,21 @@ export function openAudioTimingOptions(onChange: () => void): void {
   const waveform = el("select"); waveform.append(new Option("最大值", "0"), new Option("最大值＋平均值", "1"));
   waveform.value = String(audioNumber("waveform-style", 0, 0, 1)); const waveformLabel = el("label", "波形样式"); waveformLabel.append(waveform); numbers.push(["waveform-style", waveform]);
   const display = styleGroup("波形显示"); display.append(waveformLabel);
-  ui.body.append(options, display); ui.foot.append(button("确定", () => {
+  const spectrum = styleGroup("频谱显示");
+  for (const [key, title, choices, fallback] of [
+    ["spectrum-quality", "频谱质量", ["常规", "较好", "高", "极高"], 1],
+    ["spectrum-curve", "频率映射", ["线性", "扩展", "适中", "压缩", "对数"], 0],
+  ] as const) {
+    const select = el("select"); choices.forEach((label, index) => select.append(new Option(label, String(index))));
+    select.value = String(audioNumber(key, fallback, 0, choices.length - 1)); select.setAttribute("aria-label", title);
+    const label = el("label", title); label.append(select); spectrum.append(label); numbers.push([key, select]);
+  }
+  const scheme = el("select"); scheme.append(new Option("冰蓝", "Icy Blue"), new Option("绿色", "Green"));
+  scheme.value = localStorage.getItem("aegisub-web.audio-spectrum-scheme") ?? "Icy Blue"; scheme.setAttribute("aria-label", "频谱配色");
+  const schemeLabel = el("label", "频谱配色"); schemeLabel.append(scheme); spectrum.append(schemeLabel); numbers.push(["spectrum-scheme", scheme]);
+  const memory = el("input"); memory.type = "number"; memory.min = "2"; memory.max = "1024"; memory.value = String(audioNumber("spectrum-memory", 128, 2, 1024));
+  const memoryLabel = el("label", "频谱缓存上限（MiB）"); memoryLabel.append(memory); spectrum.append(memoryLabel); numbers.push(["spectrum-memory", memory]);
+  ui.body.append(options, display, spectrum); ui.foot.append(button("确定", () => {
     if (numbers.some(([, input]) => !input.reportValidity())) return;
     flags.forEach(([key, input]) => localStorage.setItem(`aegisub-web.audio-${key}`, String(input.checked)));
     numbers.forEach(([key, input]) => localStorage.setItem(`aegisub-web.audio-${key}`, input.value)); onChange(); ui.close();
