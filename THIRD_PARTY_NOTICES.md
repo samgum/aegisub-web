@@ -22,6 +22,10 @@ https://github.com/samgum/Aegisub/blob/master/LICENCE for the complete notice an
 The application icon and toolbar artwork in `demo/public/aegisub-icons/` are copied from the
 same pinned Aegisub source tree. The redistributed BSD notice is included beside those assets.
 
+The PCM conversion and clip-writing algorithms in `src/audio-clip-pcm.ts` follow
+`libaegisub/audio/provider.cpp` and `provider_convert.cpp` at the same pin. Their
+Copyright (c) 2014 Thomas Goyne permissive notice and disclaimer are retained in that file.
+
 ## Vendored translation worker
 
 `src/localml/` is adapted from `hikashop-nicolas/localml`, commit

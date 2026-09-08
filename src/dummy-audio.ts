@@ -1,4 +1,5 @@
 import { VirtualPlaybackClock } from "./playback-clock";
+import { clipSampleRange, monoWavHeader } from "./audio-clip-pcm";
 
 export type DummyAudioKind = "blank" | "noise";
 export const DUMMY_AUDIO_RATE = 44100;
@@ -109,18 +110,12 @@ export class DummyAudioSource extends VirtualPlaybackClock {
     return Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
   }
   setGain(gain: number): void { this.gain = Math.max(0, Math.min(8, gain)); if (this.gainNode) this.gainNode.gain.value = this.gain; }
-  async wavClip(startSeconds: number, endSeconds: number, progress?: (ratio: number) => void): Promise<Blob> {
-    const start = Math.max(0, Math.min(DUMMY_AUDIO_RATE * this.duration, Math.round(startSeconds * DUMMY_AUDIO_RATE)));
-    const end = Math.max(start, Math.min(DUMMY_AUDIO_RATE * this.duration, Math.round(endSeconds * DUMMY_AUDIO_RATE)));
-    const count = end - start, header = new Uint8Array(44), view = new DataView(header.buffer);
-    const ascii = (offset: number, text: string) => { for (let i = 0; i < text.length; i++) header[offset + i] = text.charCodeAt(i); };
-    ascii(0, "RIFF"); view.setUint32(4, 36 + count * 2, true); ascii(8, "WAVE"); ascii(12, "fmt ");
-    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
-    view.setUint32(24, DUMMY_AUDIO_RATE, true); view.setUint32(28, DUMMY_AUDIO_RATE * 2, true);
-    view.setUint16(32, 2, true); view.setUint16(34, 16, true); ascii(36, "data"); view.setUint32(40, count * 2, true);
+  async wavClip(startSeconds: number, endSeconds: number, progress?: (ratio: number) => void, signal?: AbortSignal): Promise<Blob> {
+    const { start, end } = clipSampleRange({ startMs: startSeconds * 1000, endMs: endSeconds * 1000 }, DUMMY_AUDIO_RATE, DUMMY_AUDIO_RATE * this.duration);
+    const count = end - start, header = monoWavHeader(DUMMY_AUDIO_RATE, count);
     const parts: BlobPart[] = [header];
     for (let offset = 0; offset < count; offset += 65536) {
-      if (this.dead) throw new DOMException("音频导出已取消。", "AbortError");
+      if (this.dead || signal?.aborted) throw new DOMException("音频导出已取消。", "AbortError");
       const size = Math.min(65536, count - offset), bytes = new Uint8Array(size * 2), pcm = new DataView(bytes.buffer);
       if (this.kind === "noise") for (let i = 0; i < size; i++) pcm.setInt16(i * 2, Math.round(dummyNoiseSample(start + offset + i) * 32768), true);
       // Store immutable chunks, letting browsers spool large output blobs instead of
@@ -128,7 +123,7 @@ export class DummyAudioSource extends VirtualPlaybackClock {
       parts.push(new Blob([bytes]));
       if (offset % (65536 * 8) === 0) { progress?.(offset / count); await new Promise<void>(resolve => setTimeout(resolve, 0)); }
     }
-    if (this.dead) throw new DOMException("音频导出已取消。", "AbortError");
+    if (this.dead || signal?.aborted) throw new DOMException("音频导出已取消。", "AbortError");
     progress?.(1);
     return new Blob(parts, { type: "audio/wav" });
   }

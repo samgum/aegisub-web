@@ -85,9 +85,10 @@ for arbitrary unavailable fonts or all font collections.
 ## Remaining implementation and verification
 
 1. Transport: verify the new frame index/seek path against decoded frame images and native
-   VFR fixtures, not only media.currentTime; streaming audio analysis/export retaining original channels/sample rate; reliable
+   VFR fixtures, not only media.currentTime; streaming audio analysis and provider-faithful audio export; reliable
    unsupported-codec audio (including video with ALAC) on every target engine. Audio clip
-   export for file audio is still 16k mono; synthetic audio exports native-rate PCM16.
+   export no longer uses the ASR 16k copy (see the source-derived increment below).
+   Compressed-provider mixing, terminal codec padding and physical-device codec coverage still need native comparison.
    Custom project timecode remapping across preview/playback/seeking and frame capture,
    offscreen preview capture, and original-resolution subtitle-frame export remain open.
 2. Native timing: exhaustive pointer-cancel/auto-commit edge cases, negative-range and native
@@ -338,3 +339,46 @@ immediate next-frame command jumped back toward the beginning. All editor seek c
 and native seeking events now record the pending target; the target is recalculated if
 packet indexing finishes later. Regression checks step synchronously from seeked, before
 the new presentation callback, and repeat the normal grid/video hotkey sequence.
+
+## Selected-audio export (current increment)
+
+`audio/save/clip` now uses the min start / max end of the saved selected lines, not
+only the active line and not pending timing markers. ASS times use native centiseconds;
+sample boundaries are ceilings and the exclusive end is clamped to provider length.
+Playback gain and speed do not alter the downloaded PCM. Export has its own cancellable
+worker/job strip; source replacement, close and editor disposal cancel the old job.
+Waveform analysis and ASR caches are independent. No media bytes are stored persistently.
+
+The earlier plan's "retain original channels" target was wrong for the native generic
+provider. `provider_convert.cpp` converts individual channels to signed PCM16, averages
+those integers to mono, then repeatedly doubles rates below 32 kHz using integer linear
+midpoints. 44.1/48/96 kHz are not reduced to 16 kHz. Raw PCM packets bypass the dependency's
+lossy integer-normalization round trip. Native PCM WAV decoding precedes FFmpegSource in
+the factory's hidden-provider ordering. The relevant original permissive notice is retained.
+
+File export reads a bounded range with transform-codec preroll. Decoded data is converted
+in chunks and completed output kept as immutable Blobs, not a full-track Float32 array.
+An instrumented 115 MB WAV fixture forbids whole-file reads and measures consumed bytes,
+not the size of lazy Blob slices. It requires under 4 MiB read for a 10 ms clip at 500 s.
+The procedural source shares the same header, ceiling rules and cancellation semantics.
+
+Independent FFmpeg sample points test WAV, FLAC, Opus, Vorbis, AAC, ALAC, AIFF, CAF and
+AC-3, including mid-file chirp clips where a phase shift cannot pass. Tests exposed missing
+preroll, Opus reset pre-skip, Vorbis priming timestamps (including Firefox's empty frame),
+and Matroska CodecDelay. Export now compensates those paths using packet/header metadata.
+Vorbis uses packet-associated decoded output instead of the pinned sink's timestamp reset.
+The existing replaceable libav assets handle AC-3/E-AC-3 in the export worker as well.
+
+This is **not full audio-provider parity**. FFmpegSource may apply its own channel-layout
+mixing before the common mono converter; compressed surround matrix identity has not been
+compared with the desktop binary. Ogg terminal granule/discard-padding handling still differs
+from the demuxer's last-packet duration and needs a provider-length audit. ALAC/AIFF/CAF
+currently enter export through the player's already-decoded WAV; their initial whole-file
+conversion and original high-bit-depth fidelity remain separate unfinished work. The source
+and FFmpeg checks do not certify every codec, every last sample or physical mobile devices.
+
+Local verification for this increment: 428 unit cases pass (11 existing skips), all
+68 Cypress cases pass, and 187 Playwright cases pass in Chromium/Firefox/Android profiles
+(35 explicit skips). The latter includes all 48 audio-clip cases across those profiles.
+Safari-engine media acceptance is delegated to the real macOS CI runner, not inferred
+from a Windows WebKit runtime that lacks usable native audio decoding.

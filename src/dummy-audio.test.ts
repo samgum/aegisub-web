@@ -20,3 +20,12 @@ it("exports source-rate mono PCM16 rather than an ASR-resampled copy", async () 
   expect(view.getUint16(34, true)).toBe(16); expect(view.getUint32(40, true)).toBe(4410 * 2);
   expect(view.getInt16(44, true)).toBe(Math.round(dummyNoiseSample(44100) * 32768));
 });
+it("shares ceiling boundaries with file export and cancels without destroying the source", async () => {
+  const source = new DummyAudioSource("noise"), ac = new AbortController();
+  const bytes = new DataView(await (await source.wavClip(.001, .002)).arrayBuffer());
+  expect(bytes.getUint32(40, true)).toBe(44 * 2);
+  expect(bytes.getInt16(44, true)).toBe(Math.round(dummyNoiseSample(45) * 32768));
+  const result = source.wavClip(0, 9000, () => ac.abort(), ac.signal);
+  await expect(result).rejects.toMatchObject({ name: "AbortError" });
+  expect(source.samples(45, 1)[0]).toBe(dummyNoiseSample(45));
+});

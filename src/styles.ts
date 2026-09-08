@@ -29,6 +29,9 @@ export function injectStyles(): void {
 .se-track-name{cursor:pointer;font-size:12px;}
 .se-jobstrip{display:none;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid var(--se-border);background:var(--se-head);flex-shrink:0;}
 .se-jobstrip.on{display:flex;}
+.se-audio-export{flex-wrap:wrap;}
+.se-audio-export progress{flex:1 1 80px;min-width:40px;height:12px;accent-color:var(--se-accent);}
+.se-audio-export button{font:inherit;min-height:28px;padding:2px 10px;cursor:pointer;color:var(--se-fg);background:var(--se-bg);border:1px solid var(--se-border);}
 .se-jobstrip.err .se-job-fill{background:var(--se-bad);}
 .se-jobstrip.err .se-job-label{color:var(--se-bad);}
 .se-job-label{font-size:12px;color:var(--se-muted);white-space:nowrap;}

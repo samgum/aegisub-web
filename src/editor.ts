@@ -58,6 +58,8 @@ import { createEmbeddedPlayer } from "./embedded-player";
 import { createNativeVideoPlayer } from "./native-video-player";
 import { indexedFrameSeconds } from "./presentation-time";
 import { extractStreamedWaveform } from "./waveform-extractor";
+import { exportAudioClip } from "./audio-clip";
+import { selectedAudioClipRange } from "./audio-clip-pcm";
 import { extractMp4Subtitles } from "./mp4subs";
 import { runTranslate, type TranslateRun } from "./localml/translate";
 import { buildTranslationPlan, applyUniqueTranslation, rebuildCueText, type TranslationPlan } from "./translate-plan";
@@ -347,6 +349,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private visualTransform: VisualTransformOverlay | null = null;
   private audio!: AudioWorkspace;
   private audioLoadGeneration = 0;
+  private audioExportAbort: AbortController | null = null;
   private timingDraft = new TimingDraft();
   private embeddedFontUrls: string[] = [];
   private embeddedFontSignature = "";
@@ -3796,6 +3799,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private resetAudioAnalysis(): void {
+    this.audioExportAbort?.abort();
     this.spectrumRequest++;
     this.waveAbort?.abort();
     this.waveAbort = null;
@@ -4226,37 +4230,54 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private async saveSelectedAudioClip(): Promise<void> {
-    const cue = this.selectedCue();
-    if (!cue || (!this.audio.analysisBlob && !this.audio.synthetic)) {
-      this.toast("Load audio and select a subtitle line first.");
+    const range = selectedAudioClipRange(this.doc.cues, this.selectedIds, this.doc.format === "ass");
+    const file = this.audio.analysisBlob, synthetic = this.audio.synthetic;
+    if (!range || (!file && !synthetic)) {
+      this.toast("请先加载音频并选择字幕行。");
       return;
     }
+    this.audioExportAbort?.abort();
+    const ac = new AbortController(); this.audioExportAbort = ac;
     const generation = this.audioLoadGeneration;
+    const bar = el("div", "se-jobstrip on se-audio-export");
+    bar.setAttribute("role", "status");
+    const label = el("span", "", "正在导出所选音频…");
+    const meter = document.createElement("progress"); meter.max = 1; meter.value = 0;
+    meter.setAttribute("aria-label", "音频导出进度");
+    const cancel = el("button", "", "取消") as HTMLButtonElement; cancel.type = "button";
+    cancel.addEventListener("click", () => ac.abort());
+    bar.append(label, meter, cancel); this.jobStrip.after(bar);
+    // Closing/replacing the source or cancelling removes this job immediately. It
+    // never cancels waveform analysis or changes the media transport/selection.
+    ac.signal.addEventListener("abort", () => bar.remove(), { once: true });
+    this.root.dataset.audioExport = "running";
+    const progress = (ratio: number) => {
+      if (ac.signal.aborted) return;
+      meter.value = ratio; label.textContent = `正在导出所选音频… ${Math.round(ratio * 100)}%`;
+    };
     try {
-      this.setWaveStatus("Decoding audio clip…");
-      let blob: Blob;
-      if (this.audio.synthetic) blob = await this.audio.synthetic.wavClip(cue.startMs / 1000, cue.endMs / 1000, ratio => this.setWaveStatus(`导出音频 ${Math.round(ratio * 100)}%`));
-      else {
-        const decoded = this.decodedMono16k ?? await decodeAudioToMono16k(this.audio.analysisBlob!, {
-          signal: this.waveAbort?.signal, durationHint: this.audio.duration || undefined,
-        });
-        if (generation !== this.audioLoadGeneration) return;
-        this.decodedMono16k = decoded;
-        const start = Math.max(0, Math.floor(cue.startMs * 16));
-        const end = Math.min(this.decodedMono16k.length, Math.ceil(cue.endMs * 16));
-        blob = pcm16Wav(this.decodedMono16k.subarray(start, end), 16000);
-      }
-      if (generation !== this.audioLoadGeneration) return;
+      const blob = synthetic
+        ? await synthetic.wavClip(range.startMs / 1000, range.endMs / 1000, progress, ac.signal)
+        : await exportAudioClip(file!, range, ac.signal, progress);
+      if (ac.signal.aborted || generation !== this.audioLoadGeneration) return;
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `audio-${formatTimestamp(cue.startMs, ".").replace(/:/g, "-")}.wav`;
+      anchor.download = `audio-${formatTimestamp(range.startMs, ".").replace(/:/g, "-")}.wav`;
       anchor.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+      this.root.dataset.audioExport = "done";
     } catch (error) {
-      this.toast(error instanceof Error ? error.message : String(error));
+      if (!ac.signal.aborted && generation === this.audioLoadGeneration) {
+        this.root.dataset.audioExport = "error";
+        this.toast(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      if (generation === this.audioLoadGeneration) this.setWaveStatus("");
+      bar.remove();
+      if (this.audioExportAbort === ac) {
+        this.audioExportAbort = null;
+        if (ac.signal.aborted) this.root.dataset.audioExport = "cancelled";
+      }
     }
   }
 
@@ -5624,6 +5645,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     document.removeEventListener("keydown", this.onDrawKey, true);
     this.waveAbort?.abort();
     this.clearPlaybackRuntime();
+    this.audioExportAbort?.abort();
     this.mediaFile = null;
     this.audioLoadGeneration++;
     this.audio.destroy();
@@ -5633,32 +5655,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.timeline = null;
     this.root.remove();
   }
-}
-
-function pcm16Wav(samples: Float32Array, sampleRate: number): Blob {
-  const bytes = new ArrayBuffer(44 + samples.length * 2);
-  const view = new DataView(bytes);
-  const ascii = (offset: number, value: string): void => {
-    for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
-  };
-  ascii(0, "RIFF");
-  view.setUint32(4, 36 + samples.length * 2, true);
-  ascii(8, "WAVE");
-  ascii(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  ascii(36, "data");
-  view.setUint32(40, samples.length * 2, true);
-  for (let index = 0; index < samples.length; index += 1) {
-    const value = Math.max(-1, Math.min(1, samples[index]));
-    view.setInt16(44 + index * 2, value < 0 ? value * 0x8000 : value * 0x7fff, true);
-  }
-  return new Blob([bytes], { type: "audio/wav" });
 }
 
 type GridColumnKey = "num" | "layer" | "start" | "end" | "cps" | "style" | "actor" | "effect" | "margin-l" | "margin-r" | "margin-v" | "text";
