@@ -12,6 +12,7 @@ test-corpus/** text eol=lf
 test-corpus/crlf.* binary
 test-corpus/bom-crlf.vtt binary
 test-corpus/*.mp4 binary
+test-corpus/*.png binary
 test-corpus/*.m4a binary
 test-corpus/*.wav binary
 test-corpus/*.flac binary
