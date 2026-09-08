@@ -45,6 +45,18 @@ export class AudioWorkspace {
     this.host.dataset.filename = file.name;
     this.callbacks.changed();
     try {
+      if (!isAudioFile(file)) {
+        // A video-only source is valid video, not a failed audio decode. Probe metadata
+        // before constructing an audio element that would otherwise report a codec error.
+        const { Input, BlobSource, ALL_FORMATS } = await import("mediabunny");
+        const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+        let hasAudio = true;
+        try { hasAudio = !!await input.getPrimaryAudioTrack(); }
+        catch { /* Let the native/legacy player try containers this demuxer cannot inspect. */ }
+        finally { input.dispose(); }
+        if (generation !== this.generation) return false;
+        if (!hasAudio) { this.close(); this.callbacks.progress("视频没有音频轨。"); return false; }
+      }
       const extension = file.name.split(".").pop()!.toLowerCase();
       let blob: Blob = file;
       // An audio element can read the audio track of MP4/WebM without decoding a second

@@ -37,10 +37,26 @@ Local Windows WebKit cannot decode even a plain WAV or MP4 in an isolated native
 element (MEDIA_ERR_SRC_NOT_SUPPORTED); target macOS CI must verify Safari-engine media.
 These results do not establish complete desktop parity or physical-device compatibility.
 
+First increment `b7318e2` passed all nine GitHub CI jobs, including real macOS/Linux/Windows
+runners ([run 34179750233](https://github.com/samgum/aegisub-web/actions/runs/34179750233)).
+Pages deployment [34179961700](https://github.com/samgum/aegisub-web/actions/runs/34179961700)
+succeeded. An isolated browser against the public URL verified a pending marker, G changing
+the saved end from 3000 to 3010 ms, and WAV loading while the existing video remained mounted.
+
+Second increment in progress: metadata-only frame indexing with a disk-backed BlobSource,
+presentation-order/B-frame sorting, VFR-aware frame stepping, native frame-midpoint start/end
+snapping, packet keyframes, and manual timecode override. The 24 fps/240-frame fixture and
+synthetic VFR cases pass unit tests. Five workflow tests in each of Chromium and Firefox
+pass locally. A generated VFR test pattern additionally matches FFprobe timestamps and
+FFmpeg-decoded frame geometry when stepping forward/back (both browsers); colour identity
+remains unverified, as documented in `test-corpus/VFR_ORACLE.md`.
+Dummy video retains its requested virtual CFR clock rather than being reported
+as one frame; its encoder-free implementation is still pending.
+
 ## Remaining implementation and verification
 
-1. Transport: packet-derived frame index/VFR/keyframes; frame-accurate seeking and displayed
-   time; streaming audio analysis/export retaining original channels/sample rate; reliable
+1. Transport: verify the new frame index/seek path against decoded frame images and native
+   VFR fixtures, not only media.currentTime; streaming audio analysis/export retaining original channels/sample rate; reliable
    unsupported-codec audio (including video with ALAC) on every target engine. Audio clip
    export is still 16k mono. Dummy audio still shares the dummy-video generator: replace it.
 2. Native timing: adaptive zoom/scroll, keyframe snapping, playback-follow options, linked

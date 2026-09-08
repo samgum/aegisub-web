@@ -375,7 +375,7 @@ export function stitchAdjacentTimings(
   return { doc, report: { stitched } };
 }
 
-export function parseKeyframeTimes(text: string, fps = 23.976): number[] {
+export function parseKeyframeTimes(text: string, fps = 23.976, frameTime?: (frame: number) => number): number[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
   const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -391,7 +391,7 @@ export function parseKeyframeTimes(text: string, fps = 23.976): number[] {
   const effectiveFps = declaredFps ? Number(declaredFps.split(/\s+/)[1]) : fps;
   return lines
     .filter((line) => /^\d+$/.test(line))
-    .map((line) => Math.round((Number(line) * 1000) / (effectiveFps || fps)))
+    .map((line) => frameTime ? frameTime(Number(line)) : Math.round((Number(line) * 1000) / (effectiveFps || fps)))
     .sort((a, b) => a - b);
 }
 

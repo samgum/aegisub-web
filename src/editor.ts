@@ -47,6 +47,7 @@ import { setLocale, t, alignmentOptions } from "./i18n";
 import { Timeline } from "./waveform";
 import { AudioWorkspace, isAudioFile } from "./audio-workspace";
 import { TimingDraft } from "./timing-draft";
+import { VideoFrameIndex, readVideoFrameIndex } from "./video-frame-index";
 import { decodeAudioToMono16k, extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
 import { createEmbeddedPlayer } from "./embedded-player";
 import { extractMp4Subtitles } from "./mp4subs";
@@ -302,6 +303,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private keyframesMs: number[] = [];
   private timecodesMs: number[] = [];
   private frameRate = 23.976;
+  private videoFrameIndex: VideoFrameIndex | null = null;
+  private frameIndexAbort: AbortController | null = null;
+  private dummyFrameCount = 0;
   private tagDisplayMode: "show" | "hide" | "simplify" = "simplify";
   private playRangeStop: (() => void) | null = null;
   private lastVideoPointer: { x: number; y: number } | null = null;
@@ -3697,11 +3701,21 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   private async loadVideo(
     file: File,
-    options: { restoreTime?: number; restorePaused?: boolean; scanEmbedded?: boolean; preserveView?: boolean } = {},
+    options: { restoreTime?: number; restorePaused?: boolean; scanEmbedded?: boolean; preserveView?: boolean; dummyClock?: { fps: number; duration: number } } = {},
   ): Promise<void> {
     if (isAudioFile(file)) { await this.loadAudio(file); return; }
     const generation = ++this.mediaLoadGeneration;
     const replaceAudio = !options.preserveView && (!this.audio.file || this.audio.fromVideo);
+    if (!options.preserveView) {
+      this.frameIndexAbort?.abort();
+      this.videoFrameIndex = null;
+      this.dummyFrameCount = options.dummyClock ? Math.ceil(options.dummyClock.fps * options.dummyClock.duration) : 0;
+      this.frameRate = options.dummyClock?.fps ?? 23.976;
+      this.root.dataset.frameIndex = this.dummyFrameCount ? "dummy" : "loading";
+      delete this.root.dataset.videoFrames;
+      if (this.dummyFrameCount) this.root.dataset.videoFrames = String(this.dummyFrameCount);
+      else void this.indexVideoFrames(file);
+    }
     this.setMobilePane("video");
     this.stopDebugNoise();
     this.debugNoise = false;
@@ -4023,7 +4037,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       this.setWaveStatus("Encoding dummy media…");
       const file = await createDummyVideo({ width, height, durationSeconds, frameRate, color, label: kind === "video" ? undefined : `${kind} debug audio clock` });
       this.root.dataset.dummyStatus = "loading";
-      await this.loadVideo(file);
+      await this.loadVideo(file, { dummyClock: { fps: frameRate, duration: durationSeconds } });
       this.setMobilePane(kind === "video" ? "video" : "audio");
       this.root.dataset.dummyStatus = "ready";
       this.debugNoise = kind === "noise";
@@ -4044,6 +4058,12 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   private closeMedia(): void {
     this.mediaLoadGeneration += 1;
+    this.frameIndexAbort?.abort();
+    this.frameIndexAbort = null;
+    this.videoFrameIndex = null;
+    this.dummyFrameCount = 0;
+    delete this.root.dataset.frameIndex;
+    delete this.root.dataset.videoFrames;
     this.stopDebugNoise();
     this.debugNoise = false;
     this.clearPlaybackRuntime();
@@ -4572,27 +4592,53 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (message) this.toast(message);
   }
 
-  private currentFrameDuration(): number {
-    if (this.timecodesMs.length > 1 && this.video) {
-      const current = this.video.currentTime * 1000;
-      const index = this.timecodesMs.findIndex((time) => time > current);
-      if (index > 0) return Math.max(1, this.timecodesMs[index] - this.timecodesMs[index - 1]);
+  private async indexVideoFrames(file: File): Promise<void> {
+    const controller = new AbortController();
+    this.frameIndexAbort = controller;
+    try {
+      const index = await readVideoFrameIndex(file, controller.signal);
+      if (controller.signal.aborted) return;
+      this.videoFrameIndex = index;
+      this.frameRate = index.frameRate;
+      this.root.dataset.frameIndex = "ready";
+      this.root.dataset.videoFrames = String(index.startsMs.length);
+      this.updateVideoChrome();
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      this.root.dataset.frameIndex = "unavailable";
+      this.toast(`无法建立视频帧索引：${error instanceof Error ? error.message : String(error)}`);
     }
-    return 1000 / Math.max(1, this.frameRate);
+  }
+
+  private get frameTimes(): number[] { return this.timecodesMs.length ? this.timecodesMs : this.videoFrameIndex?.startsMs ?? []; }
+  private get frameKeyframes(): number[] { return this.keyframesMs.length ? this.keyframesMs : this.videoFrameIndex?.keyframesMs ?? []; }
+
+  private currentFrameDuration(): number {
+    const frame = this.frameAtMs((this.video?.currentTime ?? 0) * 1000);
+    return VideoFrameIndex.timeAtFrame(this.frameTimes, frame + 1, this.frameRate) - VideoFrameIndex.timeAtFrame(this.frameTimes, frame, this.frameRate);
   }
 
   private frameAtMs(timeMs: number): number {
-    if (!this.timecodesMs.length) return Math.max(0, Math.round(timeMs * this.frameRate / 1000));
-    let low = 0;
-    let high = this.timecodesMs.length;
-    while (low < high) {
-      const middle = (low + high) >> 1;
-      if (this.timecodesMs[middle] < timeMs) low = middle + 1;
-      else high = middle;
-    }
-    if (low <= 0) return 0;
-    if (low >= this.timecodesMs.length) return this.timecodesMs.length - 1;
-    return Math.abs(this.timecodesMs[low] - timeMs) < Math.abs(this.timecodesMs[low - 1] - timeMs) ? low : low - 1;
+    if (!this.frameTimes.length) return Math.max(0, Math.floor(timeMs * this.frameRate / 1000));
+    return VideoFrameIndex.frameAtTime(this.frameTimes, timeMs);
+  }
+
+  private seekVideoFrame(delta: number): void {
+    if (!this.video) return;
+    const count = this.frameTimes.length || this.dummyFrameCount;
+    if (!count) { this.toast("视频帧索引尚不可用。"); return; }
+    const frame = Math.max(0, Math.min(count - 1, this.frameAtMs(this.video.currentTime * 1000) + delta));
+    this.video.pause();
+    this.audio.stop();
+    this.playRangeStop?.();
+    this.playRangeStop = null;
+    // Place the HTML decoder inside this frame's interval, avoiding floating-point
+    // conversion rounding its exact start back onto the previous frame.
+    this.seekTo(VideoFrameIndex.timeAtFrame(this.frameTimes, frame, this.frameRate) + .001);
+  }
+
+  private videoBoundaryTime(boundary: "start" | "end"): number {
+    return Math.max(0, VideoFrameIndex.timeAtFrame(this.frameTimes, this.frameAtMs((this.video?.currentTime ?? 0) * 1000), this.frameRate, boundary));
   }
 
   private currentPlayheadMs(): number {
@@ -4671,7 +4717,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       const file = input.files?.[0];
       if (!file) return;
       const text = await file.text();
-      const times = kind === "keyframes" ? parseKeyframeTimes(text, this.frameRate) : parseTimecodeFile(text, this.frameRate);
+      const times = kind === "keyframes" ? parseKeyframeTimes(text, this.frameRate, this.frameTimes.length ? frame => VideoFrameIndex.timeAtFrame(this.frameTimes, frame, this.frameRate) : undefined) : parseTimecodeFile(text, this.frameRate);
       if (kind === "keyframes") this.keyframesMs = times;
       else this.timecodesMs = times;
       const key = `aegisub-web.recent-${kind}`;
@@ -4695,7 +4741,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     for (const item of recent) {
       const button = document.createElement("button"); button.className = "ad-btn"; button.textContent = `${item.name} · ${new Date(item.updatedAt).toLocaleString()}`;
       button.addEventListener("click", () => {
-        const times = kind === "keyframes" ? parseKeyframeTimes(item.text, this.frameRate) : parseTimecodeFile(item.text, this.frameRate);
+        const times = kind === "keyframes" ? parseKeyframeTimes(item.text, this.frameRate, this.frameTimes.length ? frame => VideoFrameIndex.timeAtFrame(this.frameTimes, frame, this.frameRate) : undefined) : parseTimecodeFile(item.text, this.frameRate);
         if (kind === "keyframes") this.keyframesMs = times; else this.timecodesMs = times;
         this.toast(`${kind}: ${times.length}`); back.remove();
       });
@@ -4714,8 +4760,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
         if (valid.length) this.setSelection(valid, valid.at(-1)!);
       },
       frameRate: () => this.frameRate,
-      timecodes: () => this.timecodesMs,
-      keyframes: () => this.keyframesMs,
+      timecodes: () => this.frameTimes,
+      keyframes: () => this.frameKeyframes,
       download: (filename, bytes, mime) => {
         const url = URL.createObjectURL(new Blob(bytes, { type: mime }));
         const anchor = document.createElement("a");
@@ -4965,9 +5011,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "time/continuous/start": this.applyCueList(setContinuousTiming(this.doc.cues, selected, "start"), selectedIds); return true;
       case "time/continuous/end": this.applyCueList(setContinuousTiming(this.doc.cues, selected, "end"), selectedIds); return true;
       case "time/frame/current": this.applyCueList(shiftSelectionToTime(this.doc.cues, selected, playhead), selectedIds); return true;
-      case "time/snap/start_video": this.setSelectedEdges("start", playhead); return true;
-      case "time/snap/end_video": this.setSelectedEdges("end", playhead); return true;
-      case "time/snap/scene": this.applyCueList(snapSelectedToScene(this.doc.cues, selected, this.keyframesMs, playhead), selectedIds); return true;
+      case "time/snap/start_video": if (this.video) this.setSelectedEdges("start", this.videoBoundaryTime("start")); return true;
+      case "time/snap/end_video": if (this.video) this.setSelectedEdges("end", this.videoBoundaryTime("end")); return true;
+      case "time/snap/scene": this.applyCueList(snapSelectedToScene(this.doc.cues, selected, this.frameKeyframes, playhead), selectedIds); return true;
       case "time/lead/in": this.adjustAudioTiming(-(Number(localStorage.getItem("aegisub-web.lead-in")) || 100), 0); return true;
       case "time/lead/out": this.adjustAudioTiming(0, Number(localStorage.getItem("aegisub-web.lead-out")) || 100); return true;
       case "time/lead/both": this.adjustAudioTiming(-(Number(localStorage.getItem("aegisub-web.lead-in")) || 100), Number(localStorage.getItem("aegisub-web.lead-out")) || 100); return true;
@@ -4983,10 +5029,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
       case "keyframe/open": this.pickTimingList("keyframes"); return true;
       case "keyframe/close": this.keyframesMs = []; this.toast("keyframes closed"); return true;
-      case "keyframe/save": this.downloadText("keyframes.txt", `# keyframe format v1\nfps ${this.frameRate}\n${this.keyframesMs.map((time) => this.frameAtMs(time)).join("\n")}\n`); return true;
+      case "keyframe/save": this.downloadText("keyframes.txt", `# keyframe format v1\nfps ${this.frameRate}\n${this.frameKeyframes.map((time) => this.frameAtMs(time)).join("\n")}\n`); return true;
       case "timecode/open": this.pickTimingList("timecodes"); return true;
       case "timecode/close": this.timecodesMs = []; this.toast("timecodes closed"); return true;
-      case "timecode/save": this.downloadText("timecodes.txt", `# timecode format v2\n${this.timecodesMs.map((time) => time.toFixed(3)).join("\n")}\n`); return true;
+      case "timecode/save": this.downloadText("timecodes.txt", `# timecode format v2\n${this.frameTimes.map((time) => time.toFixed(3)).join("\n")}\n`); return true;
       case "recent/keyframes/": this.showRecentTimingLists("keyframes"); return true;
       case "recent/timecodes/": this.showRecentTimingLists("timecodes"); return true;
 
@@ -5112,8 +5158,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
         if (answer != null && Number.isFinite(Number(answer))) this.seekTo(Number(answer) * 1000);
         return true;
       }
-      case "video/frame/next": this.seekTo(playhead + frameDuration); return true;
-      case "video/frame/prev": this.seekTo(Math.max(0, playhead - frameDuration)); return true;
+      case "video/frame/next": this.seekVideoFrame(1); return true;
+      case "video/frame/prev": this.seekVideoFrame(-1); return true;
       case "video/frame/next/large": this.seekTo(playhead + 5000); return true;
       case "video/frame/prev/large": this.seekTo(Math.max(0, playhead - 5000)); return true;
       case "video/frame/next/boundary": {
@@ -5127,10 +5173,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
         return true;
       }
       case "video/frame/next/keyframe": {
-        const next = this.keyframesMs.find((time) => time > playhead + 1); if (next != null) this.seekTo(next); return true;
+        const next = this.frameKeyframes.find((time) => time > playhead + 1); if (next != null) this.stopAndSeek(next); return true;
       }
       case "video/frame/prev/keyframe": {
-        const previous = [...this.keyframesMs].reverse().find((time) => time < playhead - 1); if (previous != null) this.seekTo(previous); return true;
+        const previous = [...this.frameKeyframes].reverse().find((time) => time < playhead - 1); if (previous != null) this.stopAndSeek(previous); return true;
       }
       case "video/frame/copy": void this.captureVideoFrame("with-subs", true); return true;
       case "video/frame/copy/raw": void this.captureVideoFrame("raw", true); return true;
@@ -5378,6 +5424,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
   destroy(): void {
     this.mediaLoadGeneration += 1;
+    this.frameIndexAbort?.abort();
     this.assistant?.close();
     this.assistant = null;
     this.contextMenu?.remove();
