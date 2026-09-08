@@ -174,9 +174,16 @@ export function injectStyles(): void {
 .se-vclip-toolbar button.on{background:var(--se-accent);border-color:var(--se-accent);}
 /* Shared fallback styling for small canonical-command dialogs; richer dialog modules may add more. */
 .ad-back{position:fixed;inset:0;z-index:1650;background:rgba(0,0,0,.58);display:grid;place-items:center;padding:16px}.ad-modal{width:min(760px,100%);max-height:calc(100dvh - 32px);overflow:auto;background:var(--se-bg,#1d2025);color:var(--se-fg,#e9ebef);border:1px solid var(--se-border,#373b44);border-radius:12px}.ad-head{display:flex;align-items:center;gap:8px;padding:11px 14px;background:var(--se-head,#24272d);border-bottom:1px solid var(--se-border,#373b44)}.ad-head h2{font-size:15px;margin:0;flex:1}.ad-body{padding:14px}.ad-list{display:flex;flex-direction:column;gap:6px}.ad-btn{font:inherit;padding:7px 11px;border:1px solid var(--se-border,#373b44);border-radius:7px;background:var(--se-head,#24272d);color:inherit;cursor:pointer}
-.se-timeline-wrap{grid-area:audio;min-width:0;min-height:0;border-bottom:1px solid var(--se-border);background:var(--se-head);position:relative;display:grid;grid-template-rows:minmax(104px,1fr) 31px;overflow:hidden;}
-.se-timeline{grid-row:1;min-height:104px;}
-.se-audio-controls{grid-row:2;display:flex;align-items:center;gap:1px;padding:2px 4px;background:#ededed;border-top:1px solid #a9a9a9;overflow-x:auto;scrollbar-width:none;}
+.se-timeline-wrap{grid-area:audio;min-width:0;min-height:0;border-bottom:1px solid var(--se-border);background:var(--se-head);position:relative;display:grid;grid-template-columns:minmax(0,1fr) 76px;grid-template-rows:minmax(104px,1fr) 16px 31px;overflow:hidden;}
+.se-timeline{grid-row:1;grid-column:1;min-height:104px;touch-action:none;}
+.se-audio-scrollbar{grid-row:2;grid-column:1;min-width:0;width:100%;height:16px;margin:0;accent-color:#8dabbf;}
+.se-audio-adjustments{grid-row:1 / 3;grid-column:2;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:minmax(0,1fr) 27px;gap:1px;background:#ededed;border-left:1px solid #a9a9a9;color:#202020;padding:3px;}
+.se-audio-adjustments label{display:flex;align-items:center;flex-direction:column;gap:3px;min-height:0;font-size:11px;}
+.se-audio-adjustments input{writing-mode:vertical-lr;direction:rtl;appearance:auto;width:22px;min-height:0;height:100%;margin:0;accent-color:#4395c8;}
+.se-audio-adjustments button{grid-column:2 / 4;min-height:24px;padding:1px;border:1px solid #9da7af;background:linear-gradient(#fff,#ddd);border-radius:2px;}
+.se-audio-adjustments button.on{background:#bee4ff;border-color:#338bc5;}.se-audio-adjustments button img,.se-audio-adjustments button svg{width:22px;height:22px;}
+.se-audio-controls{grid-row:3;grid-column:1 / -1;display:flex;align-items:center;gap:1px;padding:2px 4px;background:#ededed;border-top:1px solid #a9a9a9;overflow-x:auto;scrollbar-width:none;}
+@media(pointer:coarse){.se-timeline-wrap{grid-template-columns:minmax(0,1fr) 106px;grid-template-rows:minmax(104px,1fr) 28px 42px}.se-audio-adjustments{grid-template-rows:minmax(0,1fr) 36px}.se-audio-adjustments input{width:32px}.se-audio-scrollbar{height:28px}.se-audio-controls button{min-width:36px;min-height:36px}}
 .se-audio-controls::-webkit-scrollbar{display:none;}
 .se-audio-button{flex:0 0 27px;width:27px;height:26px;}
 .se-visual-transform{position:absolute;inset:0;z-index:5;touch-action:none;cursor:crosshair;outline:none;}

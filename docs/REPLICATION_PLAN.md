@@ -88,8 +88,10 @@ for arbitrary unavailable fonts or all font collections.
    VFR fixtures, not only media.currentTime; streaming audio analysis/export retaining original channels/sample rate; reliable
    unsupported-codec audio (including video with ALAC) on every target engine. Audio clip
    export for file audio is still 16k mono; synthetic audio exports native-rate PCM16.
-2. Native timing: adaptive zoom/scroll, keyframe snapping, playback-follow options, linked
-   gain/volume, audio cache policy, full pointer-cancel and repeated-commit edge cases.
+2. Native timing: finish full pointer-cancel/auto-commit undo coalescing, negative-range and
+   ASS centisecond quantization comparisons, audio cache policy and sample-accurate endpoints.
+   Native zoom/scroll, keyframe/video-edge snapping and linked gain now have the regression
+   coverage described below; this is not exhaustive desktop timing acceptance.
 3. Visual typesetting: complete native perspective/origin/move/clip control-point behavior
    and per-frame guide updates beyond the new on-frame rotation/scale implementation.
 4. ASS preview/fonts: eliminate stale paused-frame renders; compare pixel output with
@@ -209,3 +211,37 @@ stress cases) while terminating a compiling WASM worker. Renderer retirement now
 a post-initialization get-styles handshake before terminating; font URLs outlive that
 retirement and a 30-second watchdog bounds failed startup. The same 16 stress cases pass
 after this change; browser tests also require the preview-worker count to return to zero.
+
+## Native audio interaction and gain controls (2026-09-08)
+
+Source comparison: `audio_display.cpp` mouse, zoom and scroll handlers;
+`audio_timing_dialogue.cpp` marker selection and SnapMarkers; `audio_marker.cpp` keyframe
+START midpoints and video START/END snap points; `audio_box.cpp` linked cubic gain and
+`libresrc/default_config.json` defaults. No new base repository/history was introduced.
+The obsolete validation branch was deleted at user request after proving its commits are
+reachable from main; only main remains locally and remotely.
+
+Implemented: default-on 8px snapping with Shift inversion, provider-before-dialogue ties,
+group-wide Alt snapping and origin adjustment, Ctrl coincident markers among visible lines,
+inactive-line/comment visibility, drag-timing toggle and sensitivity. Ruler drag pans;
+middle drag seeks and pauses video. Dragging outside the viewport uses the native 50ms
+scroll delay/5% inset; releasing at an edge applies the native one-third-width adjustment.
+Escape/pointercancel restores the pre-gesture draft without contaminating the saved doc.
+
+Audio wheel now pans by default, with Ctrl/Command inversion, and horizontal zoom uses
+the native -30..50 levels and piecewise factor formula. Desktop-style vertical zoom,
+amplitude and volume sliders plus a scrollbar are present, with larger touch controls.
+Amplitude and volume use (clamp(position,1,100)/50)^3, and link defaults on. Non-unity file
+audio gain uses the native decoder as one MediaElementAudioSource, not a second player.
+Muting, idle suspension and source-node disconnection are explicit. Procedural audio's
+analyser is downstream of its gain node, allowing tests to verify actual changed output.
+Default-unity video audio retains the native fast path from the previous 4K repair.
+
+Focused tests check pending 4000ms snap versus Shift-unsnapped 3900ms, cancellation and
+single-step G/undo; 1979/2021ms frame snap boundaries; ruler and outside-drag scrolling;
+native zoom breakpoints; actual 1/8 signal level at slider25 versus slider50 for both
+procedural noise and a 48kHz PCM file. Output nodes must be released on audio close.
+Local full regression at this increment: 396 unit tests (11 existing skips), 68 Cypress
+tests and 96 Playwright tests across Chromium/Firefox/Android profiles (30 explicit skips).
+The 4K benchmark and target macOS/Linux/Windows CI are checked separately before handoff.
+Physical device validation and the other remaining objective requirements stay open.

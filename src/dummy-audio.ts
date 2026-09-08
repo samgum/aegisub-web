@@ -22,6 +22,8 @@ export class DummyAudioSource extends VirtualPlaybackClock {
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private analyser: AnalyserNode | null = null;
+  private gainNode: GainNode | null = null;
+  private gain = 1;
   private loading: Promise<void> | null = null;
   private dead = false;
   private playGeneration = 0;
@@ -66,7 +68,8 @@ export class DummyAudioSource extends VirtualPlaybackClock {
       this.node = new AudioWorkletNode(context, "aegisub-dummy-noise", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
       this.node.addEventListener("processorerror", () => { this.pause(); this.onError?.("噪声音频处理器停止了，请重新打开音频。"); });
       this.analyser = context.createAnalyser(); this.analyser.fftSize = 2048;
-      this.node.connect(this.analyser);
+      this.gainNode = context.createGain(); this.gainNode.gain.value = this.gain;
+      this.node.connect(this.gainNode); this.gainNode.connect(this.analyser);
     })();
     return this.loading;
   }
@@ -105,6 +108,7 @@ export class DummyAudioSource extends VirtualPlaybackClock {
     const samples = new Float32Array(this.analyser.fftSize); this.analyser.getFloatTimeDomainData(samples);
     return Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
   }
+  setGain(gain: number): void { this.gain = Math.max(0, Math.min(8, gain)); if (this.gainNode) this.gainNode.gain.value = this.gain; }
   async wavClip(startSeconds: number, endSeconds: number, progress?: (ratio: number) => void): Promise<Blob> {
     const start = Math.max(0, Math.min(DUMMY_AUDIO_RATE * this.duration, Math.round(startSeconds * DUMMY_AUDIO_RATE)));
     const end = Math.max(start, Math.min(DUMMY_AUDIO_RATE * this.duration, Math.round(endSeconds * DUMMY_AUDIO_RATE)));
@@ -131,6 +135,7 @@ export class DummyAudioSource extends VirtualPlaybackClock {
   override dispose(): void {
     this.dead = true; super.dispose(); this.node?.disconnect(); this.node = null;
     this.analyser?.disconnect(); this.analyser = null;
+    this.gainNode?.disconnect(); this.gainNode = null;
     void this.context?.close().catch(() => undefined); this.context = null;
   }
 }

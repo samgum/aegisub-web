@@ -3,6 +3,7 @@ import { createEmbeddedPlayer } from "./embedded-player";
 import type { PlaybackClock } from "./playback-clock";
 import { DummyAudioSource, type DummyAudioKind } from "./dummy-audio";
 import { decodeAuroraAudioToWav, fileHasAlac } from "./alac";
+import { MediaGain } from "./media-gain";
 
 export function isAudioFile(file: File): boolean {
   return file.type.startsWith("audio/") || /\.(?:aac|aif|aiff|alac|caf|flac|m4a|mp3|oga|ogg|opus|wav|w64|mka|ac3|eac3|dts|ape|wma)$/i.test(file.name);
@@ -30,6 +31,8 @@ export class AudioWorkspace {
   private cancelRange: (() => void) | null = null;
   private followingVideo = false;
   private unbindVideo: (() => void) | null = null;
+  private output = new MediaGain();
+  private gain = 1;
 
   constructor(private host: HTMLElement, private callbacks: {
     changed(reason?: string): void;
@@ -42,6 +45,17 @@ export class AudioWorkspace {
   get playing(): boolean { return this.followingVideo && this.usesNativeVideoAudio ? !this.linkedVideo?.paused : this.element ? !this.element.paused : false; }
   get usesNativeVideoAudio(): boolean { return this.fromVideo && !this.separateVideoAudio; }
   get muteVideo(): boolean { return !!this.element && !this.usesNativeVideoAudio; }
+
+  setGain(gain: number): void {
+    this.gain = gain; this.output.setGain(gain); this.synthetic?.setGain(gain);
+    if (this.playing || (this.linkedVideo && !this.linkedVideo.paused)) this.prepareOutput();
+  }
+  prepareOutput(): void {
+    try {
+      if (this.element instanceof HTMLMediaElement) this.output.prepare(this.element);
+      if (this.usesNativeVideoAudio && this.linkedVideo instanceof HTMLMediaElement) this.output.prepare(this.linkedVideo);
+    } catch (error) { this.callbacks.error(error instanceof Error ? error.message : String(error)); }
+  }
 
   async load(file: File, fromVideo = false): Promise<boolean> {
     this.close();
@@ -117,6 +131,7 @@ export class AudioWorkspace {
     const generation = this.generation;
     const source = new DummyAudioSource(kind, message => { if (generation === this.generation) this.callbacks.error(message); });
     this.synthetic = source; this.element = source;
+    source.setGain(this.gain);
     this.host.dataset.filename = source.name;
     this.host.dataset.sourceKind = kind;
     for (const event of ["play", "pause", "ended", "timeupdate", "seeked"]) source.addEventListener(event, () => { if (generation === this.generation) this.callbacks.changed(event); });
@@ -126,6 +141,7 @@ export class AudioWorkspace {
   /** Video transport owns its own position; audio follows only during video playback.
    * Audio-only audition deliberately leaves the displayed video frame paused. */
   bindVideo(video: PlaybackClock | null): void {
+    if (this.linkedVideo instanceof HTMLMediaElement && this.linkedVideo !== video) this.output.release(this.linkedVideo);
     this.unbindVideo?.();
     this.unbindVideo = null;
     this.followingVideo = false;
@@ -140,6 +156,7 @@ export class AudioWorkspace {
     };
     const play = (): void => {
       this.stop();
+      this.prepareOutput();
       this.followingVideo = true;
       if (this.usesNativeVideoAudio) { this.callbacks.changed("play"); return; }
       this.seek(video.currentTime);
@@ -174,6 +191,7 @@ export class AudioWorkspace {
     this.stop();
     const audio = this.element;
     if (!audio) return;
+    this.prepareOutput();
     this.seek(startMs / 1000);
     let raf = 0;
     let timer = 0;
@@ -202,12 +220,14 @@ export class AudioWorkspace {
     this.cancelRange?.();
     this.cancelRange = null;
     this.element?.pause();
+    this.output.pauseIfIdle();
     this.callbacks.changed("pause");
   }
 
   close(): void {
     this.generation += 1;
     this.stop();
+    if (this.element instanceof HTMLMediaElement) this.output.release(this.element);
     this.player?.destroy();
     this.player = null;
     this.synthetic?.dispose(); this.synthetic = null;
@@ -224,5 +244,5 @@ export class AudioWorkspace {
     this.callbacks.changed();
   }
 
-  destroy(): void { this.bindVideo(null); this.close(); this.host.remove(); }
+  destroy(): void { this.bindVideo(null); this.close(); this.output.dispose(); this.host.remove(); }
 }

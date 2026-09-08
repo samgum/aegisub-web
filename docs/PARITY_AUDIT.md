@@ -23,7 +23,7 @@ present but the desktop primitive cannot exist in a sandboxed page.
 |---|---|
 | `app/exit`, `app/minimize`, `app/maximize`, `app/bring_to_front` | Close guidance, Fullscreen API, focus, and OS/browser window controls. |
 | `app/options` | Browser-specific settings for timing, spellcheck, theme, hotkeys, persistence and media behavior. |
-| `audio/opt/vertical_link` | Not equivalent: waveform gain/volume linking is still missing. |
+| `audio/opt/vertical_link` | Native cubic-gain sliders and linking; actual file/procedural output uses gain nodes. Physical-device and exhaustive native output comparison remain pending. |
 | `am/reload`, `am/reload/autoload`, `am/manager`, `am/meta` | Local extension registry with autoload, Fengari Lua 5.3 macros and isolated JavaScript workers. |
 | `video/subtitles_provider/cycle` | One deterministic libass-WASM renderer replaces the desktop provider plug-in chain. |
 | `video/detach` | Picture-in-Picture API. |

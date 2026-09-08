@@ -1,31 +1,35 @@
-// The bottom timeline: a canvas showing the audio waveform, the cues as draggable
-// blocks, a time ruler and a playhead. Like desktop Aegisub, a primary-button gesture in
+// Audio display: waveform/spectrum, timing markers, ruler, scrollbar and playhead.
+// Like desktop Aegisub, a primary-button gesture in
 // the audio area sets/drags the active line's start marker and a secondary-button gesture
-// sets/drags its end marker. The ruler seeks; wheel zooms and Shift+wheel pans. Works with
-// no audio decoded (blocks + playhead only); peaks are added via setPeaks when available.
+// sets/drags its end marker. The ruler pans; middle-button seeks video. Wheel pans by
+// default and Ctrl/Command inverts it to zoom. Shift inverts marker snapping.
 
 import type { Cue } from "./cue";
 import { AudioTimingGesture } from "./audio-timing-gesture";
+import { audioFlag, audioNumber, audioTimingCues, audioZoomFactor } from "./audio-options";
 import type { SpectrumData } from "./spectrum";
 
 export interface TimelineCallbacks {
   getCues: () => Cue[];
   getDuration: () => number; // media duration (s); 0 if unknown
   getCurrentTime: () => number; // s
+  getSnapTargetsMs?: () => readonly number[];
+  getVideoPositionMs?: () => number | null;
+  getKeyframesMs?: () => readonly number[];
+  onZoom?: (level: number) => void;
+  onVideoSeek?: (seconds: number) => void;
   followPlayback?: () => boolean;
   getSelectedId: () => string | null;
   getSelectedIds?: () => string[];
   onSeek: (sec: number) => void;
   onSelectCue: (id: string) => void;
   onRetime: (id: string, startMs: number, endMs: number, commit: boolean) => void;
+  onRetimeBatch?: (updates: { id: string; startMs: number; endMs: number }[], commit: boolean) => void;
 }
 
 const MIN_H = 104;
 const RULER_H = 16;
-const EDGE_PX = 5; // grab zone for a cue edge
-const SNAP_PX = 7; // snap a dragged edge to a neighbour within this pixel distance
-const MIN_PPS = 2; // min pixels per second (zoomed out)
-const MAX_PPS = 400; // max pixels per second (zoomed in)
+const EDGE_PX = 8;
 const PEAKS_PER_SEC = 100; // waveform bucket resolution
 
 type Palette = {
@@ -45,6 +49,15 @@ export class Timeline {
   private ctx!: CanvasRenderingContext2D;
   private cb: TimelineCallbacks;
   private pxPerSec = 50; // native AudioDisplay base zoom
+  private zoomLevel = audioNumber("zoom-horizontal", 0, -30, 50);
+  private amplitude = 1;
+  private wheelAccumulator = 0;
+  private scrollbar!: HTMLInputElement;
+  private scrollTimer = 0;
+  private pointerId: number | null = null;
+  private dragButton = 0;
+  private middleSeek = false;
+  private hoverX: number | null = null;
   private scrollSec = 0; // time at the left edge
   private width = 0;
   private height = MIN_H;
@@ -64,6 +77,7 @@ export class Timeline {
 
   constructor(callbacks: TimelineCallbacks) {
     this.cb = callbacks;
+    this.pxPerSec = audioZoomFactor(this.zoomLevel) / 2;
   }
 
   mount(container: HTMLElement): void {
@@ -77,6 +91,10 @@ export class Timeline {
     this.canvas.style.minHeight = `${MIN_H}px`;
     this.canvas.style.display = "block";
     container.appendChild(this.canvas);
+    this.scrollbar = document.createElement("input"); this.scrollbar.type = "range"; this.scrollbar.className = "se-audio-scrollbar";
+    this.scrollbar.setAttribute("aria-label", "音频水平滚动"); this.scrollbar.min = "0"; this.scrollbar.step = "1";
+    this.scrollbar.addEventListener("input", () => { this.scrollSec = Number(this.scrollbar.value) / this.pxPerSec; this.render(); });
+    container.append(this.scrollbar);
     this.ctx = this.canvas.getContext("2d")!;
     this.readPalette(container);
 
@@ -84,7 +102,8 @@ export class Timeline {
     this.canvas.addEventListener("pointermove", this.onHover);
     this.canvas.addEventListener("contextmenu", this.onContextMenu);
     this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
-    this.canvas.addEventListener("dblclick", this.onDblClick);
+    this.canvas.addEventListener("pointerleave", () => { if (!this.drag && !this.pan) this.hoverX = null; });
+    this.canvas.addEventListener("keydown", this.onKeyDown);
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(this.canvas);
     this.resize();
@@ -171,17 +190,28 @@ export class Timeline {
   }
 
   zoomBy(factor: number): void {
-    const center = this.scrollSec + this.width / this.pxPerSec / 2;
-    this.pxPerSec = clamp(this.pxPerSec * factor, MIN_PPS, MAX_PPS);
-    this.scrollSec = Math.max(0, center - this.width / this.pxPerSec / 2);
+    this.setZoomLevel(this.zoomLevel + (factor > 1 ? 1 : -1));
+  }
+
+  setZoomLevel(level: number, anchor = this.hoverX ?? this.width / 2): void {
+    const time = this.secOf(anchor);
+    this.zoomLevel = clamp(Math.round(level), -30, 50);
+    this.pxPerSec = audioZoomFactor(this.zoomLevel) / 2;
+    this.scrollSec = Math.max(0, time - anchor / this.pxPerSec);
+    localStorage.setItem("aegisub-web.audio-zoom-horizontal", String(this.zoomLevel));
+    this.cb.onZoom?.(this.zoomLevel);
     this.render();
   }
+
+  setAmplitudeScale(gain: number): void { this.amplitude = Math.max(0, gain); this.render(); }
 
   // Fit the whole media (or the last cue) into the view.
   fitAll(): void {
     const dur = this.totalDuration();
     if (dur > 0 && this.width > 0) {
-      this.pxPerSec = clamp(this.width / dur, MIN_PPS, MAX_PPS);
+      let level = -30;
+      while (level < 50 && audioZoomFactor(level + 1) / 2 <= this.width / dur) level++;
+      this.setZoomLevel(level);
       this.scrollSec = 0;
     }
   }
@@ -240,6 +270,11 @@ export class Timeline {
     const ctx = this.ctx;
     const w = this.width;
     if (!w) return;
+    if (this.scrollbar) {
+      this.scrollbar.max = String(Math.max(0, Math.ceil(this.totalDuration() * this.pxPerSec - w)));
+      this.scrollbar.value = String(Math.round(this.scrollSec * this.pxPerSec));
+      this.scrollbar.setAttribute("aria-valuetext", `${this.scrollSec.toFixed(3)} s`);
+    }
     const h = this.height;
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = this.pal.bg;
@@ -304,7 +339,7 @@ export class Timeline {
         for (let b = b0; b <= b1; b++) if (this.peaks[b] > peak) peak = this.peaks[b];
         if (b1 < 0 || b0 >= this.peaks.length) continue;
       }
-      const h = peak * halfH;
+      const h = Math.min(1, peak * this.amplitude) * halfH;
       ctx.moveTo(x + 0.5, midY - h);
       ctx.lineTo(x + 0.5, midY + h);
     }
@@ -324,7 +359,7 @@ export class Timeline {
       const column = Math.max(0, Math.min(spectrum.columns - 1, Math.floor(time * spectrum.columnsPerSecond)));
       for (let y = 0; y < height; y += 1) {
         const bin = Math.max(0, Math.min(spectrum.bins - 1, Math.floor((1 - y / height) * spectrum.bins)));
-        const value = spectrum.values[column * spectrum.bins + bin] / 255;
+        const value = Math.max(0, Math.min(1, spectrum.values[column * spectrum.bins + bin] / 255 + 20 * Math.log10(Math.max(.000001, this.amplitude)) / 75));
         const offset = (y * width + x) * 4;
         image.data[offset] = Math.round(18 + value ** 1.6 * 237);
         image.data[offset + 1] = Math.round(28 + Math.sin(value * Math.PI) * 150);
@@ -342,7 +377,7 @@ export class Timeline {
   private drawCues(): void {
     const ctx = this.ctx, top = RULER_H + 1, bottom = this.height;
     const active = this.cb.getSelectedId(), selected = new Set(this.cb.getSelectedIds?.() ?? []);
-    const cues = this.cb.getCues().filter(cue => {
+    const cues = this.timingCues().filter(cue => {
       const { x0, x1 } = this.cueRect(cue);
       return x1 >= 0 && x0 <= this.width && (cue.assKind !== "Comment" || cue.id === active || selected.has(cue.id));
     });
@@ -370,6 +405,15 @@ export class Timeline {
   }
 
   private drawPlayhead(): void {
+    if (audioFlag("show-keyframes")) {
+      this.ctx.strokeStyle = "#bc00bc"; this.ctx.lineWidth = 1; this.ctx.beginPath();
+      for (const time of this.cb.getKeyframesMs?.() ?? []) { const x = this.xOf(time / 1000); if (x < 0 || x > this.width) continue; this.ctx.moveTo(x, RULER_H); this.ctx.lineTo(x, this.height); }
+      this.ctx.stroke();
+    }
+    const videoTime = audioFlag("show-video-position") ? this.cb.getVideoPositionMs?.() : null;
+    if (videoTime != null) {
+      const vx = this.xOf(videoTime / 1000); this.ctx.strokeStyle = "#00a040"; this.ctx.lineWidth = 1; this.ctx.beginPath(); this.ctx.moveTo(vx, RULER_H); this.ctx.lineTo(vx, this.height); this.ctx.stroke();
+    }
     const x = this.xOf(this.cb.getCurrentTime());
     if (x < 0 || x > this.width) return;
     const ctx = this.ctx;
@@ -382,6 +426,10 @@ export class Timeline {
   }
 
   // --- interaction ---------------------------------------------------------
+
+  private timingCues(): Cue[] { return audioTimingCues(this.cb.getCues(), this.cb.getSelectedId() ?? "", this.cb.getSelectedIds?.() ?? [], audioNumber("inactive-lines", 3, 0, 3), audioFlag("inactive-comments", false)); }
+  private snapRange(shift: boolean): number { return audioFlag("snap") !== shift ? Math.trunc(audioNumber("snap-distance", 8, 0, 100) * 1000 / this.pxPerSec) : 0; }
+  private pointerX(event: PointerEvent): number { return Math.round(event.clientX - this.canvas.getBoundingClientRect().left); }
 
   private hitTest(x: number): { id: string; mode: "start" | "end" | "move" } | null {
     for (const c of this.cb.getCues()) {
@@ -397,25 +445,24 @@ export class Timeline {
 
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
+    if (this.pointerId !== null) return;
     e.preventDefault();
-    const x = e.offsetX;
+    const x = this.pointerX(e);
     this.canvas.focus({ preventScroll: true });
     const y = e.offsetY;
     const timeMs = Math.max(0, Math.round(this.secOf(x) * 1000));
 
-    // The ruler is a seek surface. Middle-click or Shift+drag anywhere pans, preserving
-    // the old navigation path without stealing Aegisub's left/right timing gestures.
-    if (y <= RULER_H && e.button === 0) {
-      this.cb.onSeek(timeMs / 1000);
-      this.render();
-      return;
-    }
-    if (e.button === 1) {
+    // Native ruler drag pans; middle-button drag seeks the VIDEO, never retimes cues.
+    if (e.button === 1 || (y <= RULER_H && e.button === 0)) {
+      this.middleSeek = e.button === 1; this.pointerId = e.pointerId;
       this.pan = { startX: x, startScroll: this.scrollSec, moved: false };
+      if (this.middleSeek) this.cb.onVideoSeek?.(timeMs / 1000);
       this.canvas.style.cursor = "grabbing";
       this.canvas.setPointerCapture(e.pointerId);
       this.canvas.addEventListener("pointermove", this.onPanMove);
       this.canvas.addEventListener("pointerup", this.onPanUp);
+      this.canvas.addEventListener("pointercancel", this.onPanUp);
+      this.canvas.addEventListener("lostpointercapture", this.onPanUp);
       return;
     }
 
@@ -431,15 +478,19 @@ export class Timeline {
         }
       }
       if (!id || !cue) return;
-      this.dragOriginal = this.cb.getCues().map(cue => ({ ...cue }));
+      this.dragOriginal = this.timingCues().map(cue => ({ ...cue }));
       this.drag = new AudioTimingGesture(this.dragOriginal, id, this.cb.getSelectedIds?.() ?? [id], timeMs, {
-        button: e.button, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey, sensitivityMs: EDGE_PX * 1000 / this.pxPerSec,
+        button: e.button, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey, sensitivityMs: audioNumber("drag-sensitivity", 8, 0, 100) * 1000 / this.pxPerSec,
+        dragTiming: audioFlag("drag-timing"), snapRangeMs: this.snapRange(e.shiftKey), snapTargetsMs: this.cb.getSnapTargetsMs?.(),
       });
+      this.pointerId = e.pointerId;
+      this.dragButton = e.button;
       this.publishDrag(false);
       this.canvas.setPointerCapture(e.pointerId);
       this.canvas.addEventListener("pointermove", this.onPointerMove);
       this.canvas.addEventListener("pointerup", this.onPointerUp);
       this.canvas.addEventListener("pointercancel", this.onPointerCancel);
+      this.canvas.addEventListener("lostpointercapture", this.onPointerCancel);
       this.render();
       return;
     }
@@ -451,102 +502,106 @@ export class Timeline {
   };
 
   private onPanMove = (e: PointerEvent): void => {
-    if (!this.pan) return;
-    const dx = e.offsetX - this.pan.startX;
+    if (!this.pan || e.pointerId !== this.pointerId) return;
+    if (this.middleSeek) { this.cb.onVideoSeek?.(Math.max(0, this.secOf(this.pointerX(e)))); return; }
+    const dx = this.pointerX(e) - this.pan.startX;
     if (Math.abs(dx) > 3) this.pan.moved = true;
-    this.scrollSec = Math.max(0, this.pan.startScroll - dx / this.pxPerSec);
+    this.scrollSec = clamp(this.pan.startScroll - dx / this.pxPerSec, 0, Math.max(0, this.totalDuration() - this.width / this.pxPerSec));
     this.render();
   };
 
   private onPanUp = (e: PointerEvent): void => {
-    if (this.pan && !this.pan.moved) this.cb.onSeek(Math.max(0, this.secOf(e.offsetX)));
+    if (e.pointerId !== this.pointerId) return;
     this.pan = null;
     this.canvas.style.cursor = "grab";
-    this.canvas.releasePointerCapture(e.pointerId);
+    this.pointerId = null; this.middleSeek = false;
+    if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
     this.canvas.removeEventListener("pointermove", this.onPanMove);
     this.canvas.removeEventListener("pointerup", this.onPanUp);
+    this.canvas.removeEventListener("pointercancel", this.onPanUp);
+    this.canvas.removeEventListener("lostpointercapture", this.onPanUp);
     this.render();
   };
 
   private onHover = (e: PointerEvent): void => {
+    this.hoverX = this.pointerX(e);
     if (this.drag || this.pan) return;
     this.canvas.style.cursor = e.offsetY <= RULER_H ? "pointer" : "crosshair";
   };
 
-  // Nearest snap target (another cue's edge, or the playhead) within SNAP_PX of `ms`,
-  // else `ms` unchanged. Keeps cue edges aligned to their neighbours.
-  private snapMs(ms: number, excludeId: string): number {
-    const thresholdMs = (SNAP_PX / this.pxPerSec) * 1000;
-    let best = ms;
-    let bestD = thresholdMs;
-    for (const c of this.cb.getCues()) {
-      if (c.id === excludeId) continue;
-      for (const t of [c.startMs, c.endMs]) {
-        const d = Math.abs(ms - t);
-        if (d < bestD) {
-          bestD = d;
-          best = t;
-        }
-      }
-    }
-    const playheadMs = this.cb.getCurrentTime() * 1000;
-    if (Math.abs(ms - playheadMs) < bestD) best = Math.round(playheadMs);
-    return best;
-  }
-
   private publishDrag(commit: boolean): void {
     const ranges = this.drag?.ranges() ?? [];
-    ranges.forEach(({ id, range }, index) => this.cb.onRetime(id, range.startMs, range.endMs, commit && index === ranges.length - 1));
+    this.publishRanges(ranges.map(({ id, range }) => ({ id, ...range })), commit);
     this.render();
   }
 
+  private publishRanges(updates: { id: string; startMs: number; endMs: number }[], commit: boolean): void {
+    if (this.cb.onRetimeBatch) this.cb.onRetimeBatch(updates, commit);
+    else updates.forEach(({ id, startMs, endMs }, index) => this.cb.onRetime(id, startMs, endMs, commit && index === updates.length - 1));
+  }
+
   private onPointerMove = (e: PointerEvent): void => {
-    if (!this.drag) return;
-    const ms = Math.max(0, Math.round(this.secOf(e.offsetX) * 1000));
-    this.drag.move(e.shiftKey ? this.snapMs(ms, this.cb.getSelectedId() ?? "") : ms);
+    if (!this.drag || e.pointerId !== this.pointerId) return;
+    const ms = Math.max(0, Math.trunc(this.secOf(this.pointerX(e)) * 1000));
+    this.drag.move(ms, this.snapRange(e.shiftKey), this.cb.getSnapTargetsMs?.());
     this.publishDrag(false);
+    const position = this.xOf(this.drag.positionMs / 1000);
+    if (!this.scrollTimer && (position < 0 || position >= this.width)) this.scrollTimer = window.setTimeout(() => {
+      this.scrollTimer = 0; if (!this.drag) return;
+      const x = this.xOf(this.drag.positionMs / 1000);
+      if (x < 0) this.panPixels(x - this.width / 20);
+      else if (x >= this.width) this.panPixels(x - this.width + this.width / 20);
+    }, 50);
   };
 
   private finishDrag(e: PointerEvent): void {
     this.drag = null;
+    clearTimeout(this.scrollTimer); this.scrollTimer = 0; this.pointerId = null;
     this.dragOriginal = [];
     if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
     this.canvas.removeEventListener("pointermove", this.onPointerMove);
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
     this.canvas.removeEventListener("pointercancel", this.onPointerCancel);
+    this.canvas.removeEventListener("lostpointercapture", this.onPointerCancel);
   }
 
   private onPointerUp = (e: PointerEvent): void => {
+    if (!this.drag || e.pointerId !== this.pointerId || e.button !== this.dragButton) return;
     this.publishDrag(true);
     this.finishDrag(e);
+    if (audioFlag("autoscroll")) {
+      const x = this.pointerX(e);
+      if (x < this.width / 20) this.panPixels(-this.width / 3);
+      else if (this.width - x < this.width / 20) this.panPixels(this.width / 3);
+    }
   };
 
   private onPointerCancel = (e: PointerEvent): void => {
-    for (const { id } of this.drag?.ranges() ?? []) {
-      const cue = this.dragOriginal.find(cue => cue.id === id);
-      if (cue) this.cb.onRetime(id, cue.startMs, cue.endMs, false);
-    }
+    if (!this.drag || e.pointerId !== this.pointerId) return;
+    const changed = new Set(this.drag.ranges().map(item => item.id));
+    this.publishRanges(this.dragOriginal.filter(cue => changed.has(cue.id)), false);
     this.finishDrag(e);
     this.render();
   };
 
-  private onDblClick = (e: MouseEvent): void => {
-    // Double-click empty area seeks precisely (single click already seeks; kept for parity).
-    if (!this.hitTest(e.offsetX)) this.cb.onSeek(Math.max(0, this.secOf(e.offsetX)));
+  private onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape" || this.pointerId === null) return;
+    event.preventDefault(); event.stopPropagation();
+    const cancel = new PointerEvent("pointercancel", { pointerId: this.pointerId });
+    if (this.drag) this.onPointerCancel(cancel); else this.onPanUp(cancel);
   };
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
-    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-      // Pan.
-      const panSec = (e.deltaX || e.deltaY) / this.pxPerSec;
-      this.scrollSec = Math.max(0, this.scrollSec + panSec);
+    const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? this.width : 1;
+    const zoom = (e.ctrlKey || e.metaKey) !== audioFlag("wheel-zoom", false);
+    if (!zoom) {
+      this.wheelAccumulator = 0; this.panPixels((e.deltaX || e.deltaY) * unit);
     } else {
-      // Zoom around the cursor.
-      const anchorSec = this.secOf(e.offsetX);
-      const factor = Math.exp(-e.deltaY * 0.002);
-      this.pxPerSec = clamp(this.pxPerSec * factor, MIN_PPS, MAX_PPS);
-      this.scrollSec = Math.max(0, anchorSec - e.offsetX / this.pxPerSec);
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      this.wheelAccumulator -= e.deltaY * unit;
+      const levels = Math.trunc(this.wheelAccumulator / 100); this.wheelAccumulator -= levels * 100;
+      if (levels) this.setZoomLevel(this.zoomLevel + levels, e.offsetX);
     }
     this.render();
   };
@@ -558,6 +613,7 @@ export class Timeline {
 
   destroy(): void {
     this.stopPlayheadLoop();
+    clearTimeout(this.scrollTimer);
     this.ro?.disconnect();
     this.canvas.removeEventListener("contextmenu", this.onContextMenu);
     this.canvas.remove();

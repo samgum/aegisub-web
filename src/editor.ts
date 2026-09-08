@@ -46,6 +46,8 @@ import { openKaraoke } from "./karaoke";
 import { setLocale, t, alignmentOptions } from "./i18n";
 import { Timeline } from "./waveform";
 import { AudioWorkspace, isAudioFile } from "./audio-workspace";
+import { AudioAdjustments, openAudioTimingOptions } from "./audio-adjustments";
+import { audioFlag } from "./audio-options";
 import { TimingDraft } from "./timing-draft";
 import { VideoFrameIndex, readVideoFrameIndex } from "./video-frame-index";
 import { VisualTransformOverlay } from "./visual-transform-overlay";
@@ -377,6 +379,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private spectrumCancel: (() => void) | null = null;
   private audioViewMode: "waveform" | "spectrum" = "waveform";
   private timeline: Timeline | null = null;
+  private audioAdjustments: AudioAdjustments | null = null;
+  private audioMarkerCache: { keys: number[]; frames: number[]; fps: number; result: number[] } | null = null;
   private waveAbort: AbortController | null = null;
   private waveStatusEl: HTMLDivElement | null = null;
   private detailTextarea: HTMLTextAreaElement | null = null;
@@ -831,20 +835,37 @@ class SubtitleEditor implements SubtitleEditorHandle {
       audioControls.append(control);
     }
     strip.appendChild(audioControls);
+    this.audioAdjustments = new AudioAdjustments({ zoom: level => this.timeline?.setZoomLevel(level), amplitude: gain => this.timeline?.setAmplitudeScale(gain), volume: gain => this.audio.setGain(gain) });
+    strip.append(this.audioAdjustments.root);
     body.appendChild(strip);
     this.root.appendChild(body);
     this.timeline = new Timeline({
       getCues: () => this.doc.cues.map(cue => this.timingDraft.read(cue)),
       getDuration: () => this.audio.duration,
       getCurrentTime: () => this.audio.currentTime,
+      getKeyframesMs: () => this.audioKeyframeTimes(),
+      getVideoPositionMs: () => this.video ? this.video.currentTime * 1000 : null,
+      getSnapTargetsMs: () => [
+        ...(audioFlag("show-keyframes") ? this.audioKeyframeTimes() : []),
+        ...(audioFlag("show-video-position") && this.video ? [this.videoBoundaryTime("start"), this.videoBoundaryTime("end")] : []),
+      ],
+      onZoom: level => this.audioAdjustments?.setZoom(level),
+      onVideoSeek: seconds => this.stopAndSeek(seconds * 1000),
       followPlayback: () => localStorage.getItem("aegisub-web.audio-lock-cursor") === "true",
       getSelectedId: () => this.selectedId,
       getSelectedIds: () => [...this.selectedIds],
       onSeek: (sec) => { this.audio.stop(); this.audio.seek(sec); },
       onSelectCue: (id) => this.select(id),
       onRetime: (id, startMs, endMs, commit) => this.retimeCue(id, startMs, endMs, commit),
+      onRetimeBatch: (updates, commit) => {
+        const cues = new Map(this.doc.cues.map(cue => [cue.id, cue]));
+        for (const update of updates) { const cue = cues.get(update.id); if (cue) this.timingDraft.set(cue, update.startMs, update.endMs); }
+        this.renderTimingDraft();
+        if (commit && audioFlag("autocommit", false)) this.commitAudioTiming(false);
+      },
     });
     this.timeline.mount(strip);
+    this.audioAdjustments.apply();
   }
 
   private setMobilePane(pane: "subtitles" | "video" | "audio"): void {
@@ -1088,7 +1109,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (!cue) return;
     this.timingDraft.set(cue, startMs, endMs);
     this.renderTimingDraft();
-    if (commit) this.scrollAudioSelectionIntoView();
+    // The audio display owns native drag-edge scrolling; do not fit/jump on mouse-up.
     if (commit && localStorage.getItem("aegisub-web.audio-autocommit") === "true") this.commitAudioTiming(false);
   }
 
@@ -3964,6 +3985,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private onTimeUpdate = (): void => {
     if (!this.video) return;
     this.updateVideoChrome();
+    if (!this.audio.playing) this.timeline?.renderPlayhead();
     const ms = this.video.currentTime * 1000;
     const active = this.doc.cues.find((c) => ms >= c.startMs && ms < c.endMs);
     const id = active?.id ?? null;
@@ -3979,7 +4001,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private seekTo(ms: number, play = false): void {
     if (this.video) {
       this.video.currentTime = ms / 1000;
-      if (play) void this.video.play().catch(() => {});
+      if (play) { this.audio.prepareOutput(); void this.video.play().catch(() => {}); }
       else {
         this.timeline?.render();
         this.refreshPausedSubtitleFrame();
@@ -4147,6 +4169,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     }
     this.playRangeStop?.();
     const video = this.video;
+    this.audio.prepareOutput();
     const stop = (): void => {
       video.removeEventListener("timeupdate", check);
       if (this.playRangeStop === stop) this.playRangeStop = null;
@@ -4494,7 +4517,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     } else if (e.key === " ") {
       if (this.video) {
         e.preventDefault();
-        if (this.video.paused) void this.video.play().catch(() => {});
+        if (this.video.paused) { this.audio.prepareOutput(); void this.video.play().catch(() => {}); }
         else this.video.pause();
       }
     }
@@ -4670,6 +4693,15 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   private get frameTimes(): number[] { return this.timecodesMs.length ? this.timecodesMs : this.videoFrameIndex?.startsMs ?? []; }
   private get frameKeyframes(): number[] { return this.keyframesMs.length ? this.keyframesMs : this.videoFrameIndex?.keyframesMs ?? []; }
+
+  private audioKeyframeTimes(): number[] {
+    const keys = this.frameKeyframes, frames = this.frameTimes;
+    const cached = this.audioMarkerCache;
+    if (cached && cached.keys === keys && cached.frames === frames && cached.fps === this.frameRate) return cached.result;
+    // Native keyframe markers use START frame midpoints, not presentation timestamps.
+    const result = keys.map(time => Math.max(0, VideoFrameIndex.timeAtFrame(frames, this.frameAtMs(time), this.frameRate, "start")));
+    this.audioMarkerCache = { keys, frames, fps: this.frameRate, result }; return result;
+  }
 
   private currentFrameDuration(): number {
     const frame = this.frameAtMs((this.video?.currentTime ?? 0) * 1000);
@@ -5201,7 +5233,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
         control?.classList.toggle("on", enabled); control?.setAttribute("aria-pressed", String(enabled));
         return true;
       }
-      case "audio/opt/vertical_link": this.toast("Waveform gain auto-scales and playback volume stays with the browser; there are no separate native sliders to link."); return true;
+      case "audio/opt/vertical_link": this.audioAdjustments?.toggleLink(); return true;
+      case "audio/options": openAudioTimingOptions(() => this.timeline?.render()); return true;
       case "audio/opt/spectrum": void this.showAudioView(this.audioViewMode === "spectrum" ? "waveform" : "spectrum"); return true;
       case "audio/karaoke": {
         this.setMobilePane("audio");
@@ -5225,7 +5258,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
         return true;
       }
       case "video/open/dummy": void this.openDummyMedia("video"); return true;
-      case "video/play": this.setMobilePane("video"); if (this.video) void this.video.play().catch(() => {}); return true;
+      case "video/play": this.setMobilePane("video"); this.audio.prepareOutput(); if (this.video) void this.video.play().catch(() => {}); return true;
       case "video/play/line": this.setMobilePane("video"); this.playFromSelected(); return true;
       case "video/jump/start": if (selectedCue) this.seekTo(selectedCue.startMs); return true;
       case "video/jump/end": if (selectedCue) this.seekTo(selectedCue.endMs); return true;
