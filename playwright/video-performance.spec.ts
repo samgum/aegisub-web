@@ -7,6 +7,7 @@ test("native video keeps one active AV transport and caches waveform painting", 
   await page.locator("#media-file").setInputFiles("test-corpus/tiny-timing.mp4");
   const root = page.locator(".se-root"), video = page.locator(".se-playerhost video");
   await expect(root).toHaveAttribute("data-video-decoder", "native");
+  await expect(video).toHaveAttribute("preload", "auto");
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.readyState)).toBeGreaterThanOrEqual(2);
   await expect.poll(() => page.evaluate(() => !!(window as any).subHandle.audio.element)).toBe(true);
   await expect.poll(() => page.evaluate(() => !!(window as any).subHandle.wavePeaks)).toBe(true);

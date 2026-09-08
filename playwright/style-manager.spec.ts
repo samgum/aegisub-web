@@ -2,6 +2,14 @@ import { expect, test, type Page } from "@playwright/test";
 
 const doc = (page: Page) => page.evaluate(() => (window as any).subHandle.getDoc());
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    const live = new Set<Worker>(); (window as any).stylePreviewWorkers = live;
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) { super(url, options); live.add(this); }
+      terminate() { live.delete(this); super.terminate(); }
+    };
+  });
   await page.goto("/"); await expect.poll(() => page.evaluate(() => !!(window as any).subHandle)).toBe(true);
   await page.locator("#file").setInputFiles("test-corpus/base.ass");
   await page.evaluate(() => (window as any).subHandle.runAegisubCommand("tool/style/manager"));
@@ -29,6 +37,7 @@ test("multi-field Apply survives host cloning; rename, cancel, and new-style can
   await script.getByRole("button", { name: "新建", exact: true }).click();
   await editor.getByRole("button", { name: "取消", exact: true }).click();
   expect((await doc(page)).styles).toHaveLength(count);
+  await expect.poll(() => page.evaluate(() => (window as any).stylePreviewWorkers.size)).toBe(0);
   await page.screenshot({ path: info.outputPath("style-manager.png") });
   const bounds = await manager.boundingBox(); expect(bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
 });

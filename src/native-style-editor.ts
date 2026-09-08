@@ -51,7 +51,7 @@ export function openNativeStyleEditor(host: StylesEditorHost, original: AssStyle
   };
   const changed = () => { clearTimeout(timer); timer = window.setTimeout(render, 60); };
   const observer = new ResizeObserver(changed); observer.observe(canvas);
-  ui.dialog.addEventListener("close", () => { clearTimeout(timer); observer.disconnect(); renderer.dispose(); embedded.forEach(url => URL.revokeObjectURL(url)); }, { once: true });
+  ui.dialog.addEventListener("close", () => { clearTimeout(timer); observer.disconnect(); void renderer.dispose().finally(() => embedded.forEach(url => URL.revokeObjectURL(url))); }, { once: true });
   const field = (parent: HTMLElement, title: string, key: string, type = "number", min?: number, max?: number): HTMLInputElement => {
     const label = el("label", title), input = el("input"); input.type = type; input.dataset.styleField = key;
     input.value = draft.fields[key] ?? makeDefaultStyle("Default").fields[key] ?? ""; input.step = "any";

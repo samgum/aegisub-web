@@ -1,8 +1,36 @@
 import type SubtitlesOctopus from "@jellyfin/libass-wasm";
 
+/** Firefox can crash if a WASM worker is terminated while its module is compiling.
+ * A get-styles response is a runtime handshake (unlike Octopus.onReady, which fires
+ * on the first log message). Close the UI immediately; retire the worker after that
+ * handshake, with a bounded fallback for a failed/hung worker. */
+function deferredRetirement(renderer: SubtitlesOctopus): () => Promise<void> {
+  const worker = renderer.worker!;
+  let initialized = false, retired = false, finished = false, timer = 0;
+  let resolve!: () => void;
+  const done = new Promise<void>(finish => { resolve = finish; });
+  const finish = () => {
+    if (finished) return;
+    finished = true; clearTimeout(timer); worker.removeEventListener("message", ready);
+    renderer.dispose(); resolve();
+  };
+  const ready = (event: MessageEvent) => {
+    if (event.data?.target !== "get-styles") return;
+    initialized = true;
+    if (retired) { clearTimeout(timer); timer = window.setTimeout(finish, 0); }
+  };
+  worker.addEventListener("message", ready);
+  worker.postMessage({ target: "get-styles" });
+  return () => {
+    if (!retired) { retired = true; timer = window.setTimeout(finish, initialized ? 0 : 30000); }
+    return done;
+  };
+}
+
 /** A single, explicitly clocked ASS renderer. It does not own or reload the video. */
 export class CanvasAssRenderer {
   private renderer: SubtitlesOctopus | null = null;
+  private retireCurrent: (() => Promise<void>) | null = null;
   private generation = 0;
   private disposed = false;
   private loading = false;
@@ -43,7 +71,7 @@ export class CanvasAssRenderer {
   }
   private async start(): Promise<void> {
     const generation = ++this.generation;
-    this.renderer?.dispose(); this.renderer = null; this.loading = true;
+    void this.retireCurrent?.(); this.retireCurrent = null; this.renderer = null; this.loading = true;
     try {
       const { default: Octopus } = await import("@jellyfin/libass-wasm");
       if (this.disposed || generation !== this.generation) return;
@@ -53,10 +81,15 @@ export class CanvasAssRenderer {
         onReady: () => { if (generation === this.generation) { this.renderer?.setIsPaused(true, this.time); this.renderAt(this.time, true); } },
         onError: error => { if (!this.disposed && generation === this.generation) this.onError(String(error)); },
       });
+      this.retireCurrent = deferredRetirement(this.renderer);
       this.renderer.setIsPaused(true, this.time);
       this.renderAt(this.time, true);
     } catch (error) { if (!this.disposed && generation === this.generation) this.onError(String(error)); }
     finally { if (generation === this.generation) this.loading = false; }
   }
-  dispose(): void { this.disposed = true; this.generation++; this.renderer?.dispose(); this.renderer = null; this.canvas.width = 0; this.canvas.height = 0; }
+  async dispose(): Promise<void> {
+    this.disposed = true; this.generation++; this.renderer = null;
+    await this.retireCurrent?.(); this.retireCurrent = null;
+    this.canvas.width = 0; this.canvas.height = 0;
+  }
 }

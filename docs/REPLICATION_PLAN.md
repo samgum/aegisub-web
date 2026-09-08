@@ -201,3 +201,11 @@ alternative to wheel zoom, including iPad/iPhone WebKit where the test protocol 
 
 The long-term goal remains incomplete: full physical-device acceptance, native automation
 semantics and the outstanding timing/visual-workflow items above still require verification.
+
+Cross-platform publication checks exposed two follow-ups: Safari retained HAVE_METADATA
+without a first image under `preload=metadata`, so native preview now requests frame data
+with `preload=auto`. Rapid style-open/cancel reproduced a Firefox target crash (2/16 local
+stress cases) while terminating a compiling WASM worker. Renderer retirement now waits for
+a post-initialization get-styles handshake before terminating; font URLs outlive that
+retirement and a 30-second watchdog bounds failed startup. The same 16 stress cases pass
+after this change; browser tests also require the preview-worker count to return to zero.

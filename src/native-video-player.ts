@@ -8,7 +8,10 @@ export function createNativeVideoPlayer(host: HTMLElement, file: File, fonts: st
   Object.assign(wrapper.style, { width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" });
   const stage = document.createElement("div"); stage.className = "ot-media-stage"; stage.style.position = "relative";
   const video = document.createElement("video");
-  video.playsInline = true; video.preload = "metadata"; video.controls = false;
+  // Safari leaves preload=metadata at HAVE_METADATA with no decoded preview frame.
+  // Ask the native decoder for frame data; this is still a disk-backed Blob URL, not
+  // an application-owned whole-file ArrayBuffer or a second playback pipeline.
+  video.playsInline = true; video.preload = "auto"; video.controls = false;
   const url = URL.createObjectURL(file); video.src = url;
   const parent = document.createElement("div"); parent.className = "libassjs-canvas-parent";
   Object.assign(parent.style, { position: "absolute", inset: "0", pointerEvents: "none" });
