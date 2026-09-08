@@ -253,8 +253,9 @@ test("keeps media while opening subtitles and reproduces desktop timing interact
   await page.locator(".se-row").first().click();
   const canvas = await page.locator(".se-timeline").boundingBox();
   expect(canvas).not.toBeNull();
-  await page.mouse.click(canvas!.x + canvas!.width * .2, canvas!.y + canvas!.height * .6, { button: "left" });
-  await page.mouse.click(canvas!.x + canvas!.width * .8, canvas!.y + canvas!.height * .6, { button: "right" });
+  // Native base zoom is 50 px/s, not a fit-to-file scale which changes with pane size.
+  await page.mouse.click(canvas!.x + 100, canvas!.y + canvas!.height * .6, { button: "left" });
+  await page.mouse.click(canvas!.x + 400, canvas!.y + canvas!.height * .6, { button: "right" });
   await page.locator(".se-timeline").press("g");
   const retimed = await page.evaluate(() => (window as unknown as { subHandle: { getDoc(): { cues: { startMs: number; endMs: number }[] } } }).subHandle.getDoc().cues[0]);
   expect(retimed.startMs).toBeGreaterThan(1500);

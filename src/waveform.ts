@@ -12,6 +12,7 @@ export interface TimelineCallbacks {
   getCues: () => Cue[];
   getDuration: () => number; // media duration (s); 0 if unknown
   getCurrentTime: () => number; // s
+  followPlayback?: () => boolean;
   getSelectedId: () => string | null;
   getSelectedIds?: () => string[];
   onSeek: (sec: number) => void;
@@ -43,7 +44,7 @@ export class Timeline {
   private canvas!: HTMLCanvasElement;
   private ctx!: CanvasRenderingContext2D;
   private cb: TimelineCallbacks;
-  private pxPerSec = 20;
+  private pxPerSec = 50; // native AudioDisplay base zoom
   private scrollSec = 0; // time at the left edge
   private width = 0;
   private height = MIN_H;
@@ -108,7 +109,6 @@ export class Timeline {
     this.peakProvider = null;
     this.peaks = peaks;
     this.peaksPerSec = peaksPerSec;
-    this.fitAll();
     this.render();
   }
 
@@ -120,7 +120,7 @@ export class Timeline {
 
   setPeakProvider(provider: (start: number, end: number) => number): void {
     this.peaks = null; this.peakProvider = provider;
-    this.fitAll(); this.render();
+    this.render();
   }
 
   clearSpectrum(): void {
@@ -144,6 +144,22 @@ export class Timeline {
   panBy(seconds: number): void {
     const visible = this.width / this.pxPerSec;
     this.scrollSec = clamp(this.scrollSec + seconds, 0, Math.max(0, this.totalDuration() - visible));
+    this.render();
+  }
+
+  panPixels(pixels: number): void { this.panBy(pixels / this.pxPerSec); }
+
+  /** Native ScrollTimeRangeInView: a 5% margin, preserving an already visible range. */
+  showRange(start: number, end: number): void {
+    const margin = this.width / 20 / this.pxPerSec;
+    const visible = this.width * .9 / this.pxPerSec, left = this.scrollSec + margin;
+    const length = end - start;
+    if (start >= left && end <= left + visible) return;
+    if (length < visible) this.scrollSec = start - (visible - length) / 2 - margin;
+    else if (start < left && end > left + visible) return;
+    else if (end >= left && end < left + visible) this.scrollSec = end - visible - margin;
+    else this.scrollSec = start - margin;
+    this.scrollSec = Math.max(0, Math.min(this.scrollSec, this.totalDuration() - this.width / this.pxPerSec));
     this.render();
   }
 
@@ -185,7 +201,6 @@ export class Timeline {
     this.height = Math.max(MIN_H, rect.height || MIN_H);
     this.canvas.height = Math.round(this.height * this.dpr);
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    if (this.pxPerSec * this.totalDuration() < this.width) this.fitAll();
     this.render();
   }
 
@@ -193,7 +208,7 @@ export class Timeline {
   startPlayheadLoop(): void {
     cancelAnimationFrame(this.raf);
     const tick = () => {
-      this.followPlayhead();
+      if (this.cb.followPlayback?.()) this.followPlayhead();
       this.render();
       this.raf = requestAnimationFrame(tick);
     };
@@ -207,9 +222,9 @@ export class Timeline {
 
   private followPlayhead(): void {
     const t = this.cb.getCurrentTime();
-    const left = this.scrollSec;
-    const right = this.scrollSec + this.width / this.pxPerSec;
-    if (t < left || t > right - 0.5) this.scrollSec = Math.max(0, t - (this.width / this.pxPerSec) * 0.3);
+    const width = this.width / this.pxPerSec, edge = width / 20;
+    if (this.scrollSec > 0 && t < this.scrollSec + edge) this.scrollSec = Math.max(0, t - edge);
+    else if (this.scrollSec + width < Math.min(this.totalDuration() - 1 / this.pxPerSec, t + edge)) this.scrollSec = Math.max(0, Math.min(t - width + edge, this.totalDuration() - width - 1 / this.pxPerSec));
   }
 
   private xOf(sec: number): number {
@@ -314,90 +329,33 @@ export class Timeline {
   }
 
   private drawCues(): void {
-    const ctx = this.ctx;
-    const top = RULER_H + 6;
-    const bottom = this.height - 6;
-    const selId = this.cb.getSelectedId();
-    ctx.font = "11px system-ui, sans-serif";
-    ctx.textBaseline = "middle";
-    for (const c of this.cb.getCues()) {
-      const { x0, x1 } = this.cueRect(c);
-      if (x1 < 0 || x0 > this.width) continue;
-      const sel = c.id === selId;
-      const commented = c.assKind === "Comment";
-      const w = Math.max(2, x1 - x0);
+    const ctx = this.ctx, top = RULER_H + 1, bottom = this.height;
+    const active = this.cb.getSelectedId(), selected = new Set(this.cb.getSelectedIds?.() ?? []);
+    const cues = this.cb.getCues().filter(cue => {
+      const { x0, x1 } = this.cueRect(cue);
+      return x1 >= 0 && x0 <= this.width && (cue.assKind !== "Comment" || cue.id === active || selected.has(cue.id));
+    });
+    // Dialogue mode supplies ranges and markers, not cue-text labels or ASS fade shapes.
+    // Karaoke has its own syllable editor; ordinary timing must not obscure the waveform.
+    for (const cue of cues) {
+      const { x0, x1 } = this.cueRect(cue);
       ctx.fillStyle = this.pal.cue;
-      ctx.globalAlpha = (sel ? 0.5 : 0.32) * (commented ? 0.4 : 1);
-      roundRect(ctx, x0, top, w, bottom - top, 3);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = sel ? this.pal.cueSel : this.pal.border;
-      ctx.lineWidth = sel ? 2 : 1;
-      roundRect(ctx, x0, top, w, bottom - top, 3);
-      ctx.stroke();
-      // Karaoke syllable divisions (\k / \kf) and fade (\fad) triangles, for ASS cues.
-      this.drawCueMarks(c, x0, x1, top, bottom);
-      // Label, clipped to the block.
-      if (w > 24) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(x0 + 3, top, w - 6, bottom - top);
-        ctx.clip();
-        ctx.fillStyle = this.pal.cueText;
-        ctx.fillText(c.text.replace(/\n/g, " ").slice(0, 80), x0 + 5, (top + bottom) / 2);
-        ctx.restore();
-      }
+      ctx.globalAlpha = cue.id === active ? .18 : selected.has(cue.id) ? .1 : .04;
+      ctx.fillRect(x0, top, Math.max(1, x1 - x0), bottom - top);
     }
-  }
-
-  // Fade-in/out triangles and karaoke syllable boundaries drawn inside a cue's block.
-  private drawCueMarks(c: Cue, x0: number, x1: number, top: number, bottom: number): void {
-    if (c.assKind === undefined || !c.text.includes("\\")) return;
-    const ctx = this.ctx;
-    const durMs = c.endMs - c.startMs || 1;
-    const pxPerMs = (x1 - x0) / durMs;
-    // Karaoke boundaries.
-    const kRe = /\\k[fo]?(\d+)/g;
-    let m: RegExpExecArray | null;
-    let cumMs = 0;
-    ctx.strokeStyle = this.pal.cueSel;
-    ctx.globalAlpha = 0.5;
-    ctx.lineWidth = 1;
-    while ((m = kRe.exec(c.text))) {
-      cumMs += (parseInt(m[1], 10) || 0) * 10;
-      const x = x0 + cumMs * pxPerMs;
-      if (x > x0 && x < x1) {
-        ctx.beginPath();
-        ctx.moveTo(x, top + 2);
-        ctx.lineTo(x, bottom - 2);
+    ctx.globalAlpha = 1;
+    for (const emphasized of [false, true]) for (const cue of cues) {
+      const primary = cue.id === active || selected.has(cue.id);
+      if (primary !== emphasized) continue;
+      const { x0, x1 } = this.cueRect(cue);
+      ctx.lineWidth = primary ? 2 : 1;
+      for (const [x, color, direction] of [[x0, "#d80000", 1], [x1, "#0000d8", -1]] as const) {
+        ctx.strokeStyle = primary ? color : "#bebebe";
+        ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom);
+        if (primary) { ctx.moveTo(x, top + 3); ctx.lineTo(x + direction * 6, top + 3); ctx.moveTo(x, bottom - 3); ctx.lineTo(x + direction * 6, bottom - 3); }
         ctx.stroke();
       }
     }
-    ctx.globalAlpha = 1;
-    // Fade triangles (drawn alongside any karaoke divisions).
-    const fad = c.text.match(/\\fad\((\d+),(\d+)\)/);
-    if (!fad) return;
-    ctx.fillStyle = this.pal.cueSel;
-    ctx.globalAlpha = 0.35;
-    const inW = Math.min(x1 - x0, parseInt(fad[1], 10) * pxPerMs);
-    const outW = Math.min(x1 - x0, parseInt(fad[2], 10) * pxPerMs);
-    if (inW > 1) {
-      ctx.beginPath();
-      ctx.moveTo(x0, bottom);
-      ctx.lineTo(x0 + inW, bottom);
-      ctx.lineTo(x0, top);
-      ctx.closePath();
-      ctx.fill();
-    }
-    if (outW > 1) {
-      ctx.beginPath();
-      ctx.moveTo(x1, bottom);
-      ctx.lineTo(x1 - outW, bottom);
-      ctx.lineTo(x1, top);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
   }
 
   private drawPlayhead(): void {
@@ -613,15 +571,4 @@ function clock(sec: number, decimals = 0): string {
   const p = (n: number) => String(Math.floor(n)).padStart(2, "0");
   const secStr = decimals ? ss.toFixed(decimals).padStart(3 + decimals, "0") : p(ss);
   return h ? `${h}:${p(m)}:${secStr}` : `${m}:${secStr}`;
-}
-
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
 }

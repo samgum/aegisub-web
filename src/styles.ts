@@ -179,8 +179,6 @@ export function injectStyles(): void {
 .se-audio-controls{grid-row:2;display:flex;align-items:center;gap:1px;padding:2px 4px;background:#ededed;border-top:1px solid #a9a9a9;overflow-x:auto;scrollbar-width:none;}
 .se-audio-controls::-webkit-scrollbar{display:none;}
 .se-audio-button{flex:0 0 27px;width:27px;height:26px;}
-.se-audio-option{display:flex;align-items:center;white-space:nowrap;font-size:11px;gap:2px;padding:0 4px;}
-.se-audio-option input{margin:0;}
 .se-visual-transform{position:absolute;inset:0;z-index:5;touch-action:none;cursor:crosshair;outline:none;}
 .se-visual-transform svg{display:block;overflow:hidden;fill:rgba(160,200,245,.25);stroke:#b1d7ff;stroke-width:1.5;filter:drop-shadow(0 1px 1px #000);}
 .se-visual-transform .se-visual-ring{stroke:#6babec;stroke-width:5;fill:rgba(70,120,200,.08);}

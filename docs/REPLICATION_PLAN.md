@@ -126,7 +126,11 @@ Local tests explicitly disable VideoEncoder/AudioEncoder. Canvas preview/clock t
 in Chromium and the local Windows WebKit runtime. Windows WebKit lacks Web Audio (its
 AudioContext is undefined), so real noise-output acceptance requires the configured macOS
 runner. Chromium tests measure output through AnalyserNode, not just an advancing clock.
-This increment is not complete until its full regression/target CI and deployed path pass.
+Virtual-provider increment `d3ea0d5` passed all nine CI jobs
+([34185626553](https://github.com/samgum/aegisub-web/actions/runs/34185626553)) and Pages
+deployment ([34186438052](https://github.com/samgum/aegisub-web/actions/runs/34186438052)).
+A fresh browser on the public URL, with VideoEncoder disabled, created a 2-second Canvas
+video and measured nonzero noise output (RMS about 0.062) from the independent 9000-second source.
 
 Local evidence: 384 unit cases pass (11 existing skips); 60 applicable Playwright cases in
 Chromium/Firefox/Android profiles pass (24 explicit skips). The old Cypress dummy test was
@@ -135,5 +139,27 @@ spec passes, with the other 49 Cypress cases passing in the preceding full run. 
 is tested against raw procedural PCM, including the silent source's zero spectrum. Native
 random-engine bit identity and exhaustive colored checkerboard rounding are not claimed.
 
-Next: finish virtual-provider regression and publication, then address file-audio streaming,
-quality and remaining native visual-edit workflows. Do not close the goal at a command-count milestone.
+## Audio viewport corrections (current increment)
+
+Source comparison found that the previous A/F commands scrolled seconds rather than the
+native 128 pixels; auto-scroll incorrectly toggled subtitle-grid follow; and every media/
+pane change fit the entire timeline. The viewport now starts at native 50 px/s, preserves
+zoom, scrolls 128 pixels, and implements 5%-margin selected-range visibility independently
+of grid follow. Cursor-lock scrolling is optional and off by default. Lead-out defaults to
+native 350 ms, and explicit zero lead values are respected. Native toggle artwork replaces
+the text-checkbox strip. Normal dialogue mode no longer draws invented subtitle-text labels,
+fade triangles or karaoke divisions over the waveform; it displays ranges and boundaries.
+
+Focused checks: 12 viewport cases across Chromium/Firefox/Android plus existing platform
+regressions (38 passing, 10 intentional skips); the full local browser run then passed 72
+cases with 24 intentional skips. A pre-existing Cypress race was exposed: the tablet test
+clicked through before the asynchronous resolution-mismatch modal appeared. The test now
+completes the actual Ignore choice instead of bypassing it; all five production-workflow
+cases pass. Remaining audio interaction work includes
+exact snapping/Shift inversion, drag-scroll, marker sensitivity, gain/volume linking, and
+streaming file-audio rendering. In particular native snapping defaults on; the older gesture
+implementation still needs its snap-target and modifier logic reconciled.
+Dummy project URI restoration and generated timecode-file export also remain to be completed.
+
+Next: finish viewport regression/publication, then address file-audio streaming, quality and
+remaining native visual-edit workflows. Do not close the goal at a command-count milestone.

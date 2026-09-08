@@ -21,6 +21,14 @@ function replaceSelectedText(value: string): void {
   });
 }
 
+function keepScriptResolution(): void {
+  // The 160x120 fixture intentionally differs from the ASS PlayRes. Complete the real
+  // modal choice before proceeding; racing metadata used to hide an open blocking dialog.
+  cy.contains("dialog.shell-dialog", "Resolution mismatch").should("be.visible").within(() => {
+    cy.contains("button", /^Ignore$/).click();
+  });
+}
+
 describe("production subtitle workflows", () => {
   it("edits, retimes, previews and round-trips a styled ASS project on desktop", () => {
     cy.viewport(1440, 900);
@@ -36,6 +44,7 @@ describe("production subtitle workflows", () => {
     cy.get("#media-file").selectFile("test-corpus/tiny.mp4", { force: true });
     cy.get(".se-has-media", { timeout: 10000 }).should("exist");
     cy.get(".se-right video").should("exist");
+    keepScriptResolution();
     editor().then((handle) => handle.runAegisubCommand("audio/view/spectrum"));
     cy.get('.se-timeline[data-audio-view="spectrum"]', { timeout: 20000 }).should("be.visible");
 
@@ -46,6 +55,7 @@ describe("production subtitle workflows", () => {
       cy.get("#file").selectFile({ contents: Cypress.Buffer.from(saved), fileName: "roundtrip.ass" }, { force: true });
     });
     cy.get(".se-row").should("have.length", 6);
+    keepScriptResolution();
     cy.get('.se-right video[data-media-identity="keep"]').should("exist").and("not.have.attr", "controls");
     editor().then((handle) => {
       expect(handle.getDoc().format).to.equal("ass");
@@ -112,6 +122,7 @@ describe("production subtitle workflows", () => {
     replaceSelectedText("Tablet workflow line");
     cy.get("#media-file").selectFile("test-corpus/tiny.mp4", { force: true });
     cy.get('.se-root[data-mobile-pane="video"] .se-right').should("be.visible");
+    keepScriptResolution();
     editor().then((handle) => handle.runAegisubCommand("audio/view/waveform"));
     cy.get('.se-root[data-mobile-pane="audio"] .se-timeline-wrap').should("be.visible");
     cy.contains(".se-pane-button", "字幕").click();

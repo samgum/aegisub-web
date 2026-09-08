@@ -94,13 +94,14 @@ function showOptions(): void {
   showShellDialog("Aegisub Web 设置", (body, close) => {
     const fields: [string, string, string][] = [
       ["Lead-in (ms)", "aegisub-web.lead-in", "100"],
-      ["Lead-out (ms)", "aegisub-web.lead-out", "100"],
+      ["Lead-out (ms)", "aegisub-web.lead-out", "350"],
     ];
     for (const [labelText, key, fallback] of fields) {
       const label = document.createElement("label");
       label.textContent = labelText;
       const input = document.createElement("input");
       input.type = "number";
+      input.min = "0";
       input.value = localStorage.getItem(key) ?? fallback;
       input.addEventListener("change", () => localStorage.setItem(key, input.value));
       label.append(input);
@@ -113,6 +114,12 @@ function showOptions(): void {
     spellInput.addEventListener("change", () => localStorage.setItem("aegisub-web.spellcheck", String(spellInput.checked)));
     spell.append(spellInput, document.createTextNode(" 启用浏览器拼写检查"));
     body.append(spell);
+    const lock = document.createElement("label"), lockInput = document.createElement("input");
+    lockInput.type = "checkbox";
+    lockInput.checked = localStorage.getItem("aegisub-web.audio-lock-cursor") === "true";
+    lockInput.addEventListener("change", () => localStorage.setItem("aegisub-web.audio-lock-cursor", String(lockInput.checked)));
+    lock.append(lockInput, document.createTextNode(" 音频播放时锁定滚动到光标"));
+    body.append(lock);
     const done = document.createElement("button");
     done.textContent = "完成";
     done.addEventListener("click", close);

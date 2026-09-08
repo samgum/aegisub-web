@@ -814,17 +814,16 @@ class SubtitleEditor implements SubtitleEditorHandle {
     audioButton("button_audio_commit", "提交时间", "audio/commit");
     audioButton("button_audio_goto", "跳到选择", "audio/go_to");
     audioButton("kara_mode", "卡拉 OK", "audio/karaoke");
-    for (const [key, label, defaultOn] of [
-      ["audio-autocommit", "自动提交", false], ["audio-autonext", "提交后下一行", true],
+    for (const [key, label, defaultOn, icon] of [
+      ["audio-autoscroll", "自动滚动到所选字幕", true, "toggle_audio_autoscroll"],
+      ["audio-autocommit", "自动提交", false, "toggle_audio_autocommit"],
+      ["audio-autonext", "提交后下一行", true, "toggle_audio_nextcommit"],
     ] as const) {
-      const labelEl = el("label", "se-audio-option", label);
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.dataset.audioOption = key;
-      checkbox.checked = localStorage.getItem(`aegisub-web.${key}`) === null ? defaultOn : localStorage.getItem(`aegisub-web.${key}`) === "true";
-      checkbox.addEventListener("change", () => localStorage.setItem(`aegisub-web.${key}`, String(checkbox.checked)));
-      labelEl.prepend(checkbox);
-      audioControls.append(labelEl);
+      const control = this.iconButton(nativeIcon(icon), label, () => this.runAegisubCommand(`audio/opt/${key.slice(6)}`));
+      control.classList.add("se-audio-button"); control.dataset.audioOption = key;
+      const enabled = localStorage.getItem(`aegisub-web.${key}`) === null ? defaultOn : localStorage.getItem(`aegisub-web.${key}`) === "true";
+      control.classList.toggle("on", enabled); control.setAttribute("aria-pressed", String(enabled));
+      audioControls.append(control);
     }
     strip.appendChild(audioControls);
     body.appendChild(strip);
@@ -833,6 +832,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       getCues: () => this.doc.cues.map(cue => this.timingDraft.read(cue)),
       getDuration: () => this.audio.duration,
       getCurrentTime: () => this.audio.currentTime,
+      followPlayback: () => localStorage.getItem("aegisub-web.audio-lock-cursor") === "true",
       getSelectedId: () => this.selectedId,
       getSelectedIds: () => [...this.selectedIds],
       onSeek: (sec) => { this.audio.stop(); this.audio.seek(sec); },
@@ -851,7 +851,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
       button.setAttribute("aria-selected", String(active));
     }
     requestAnimationFrame(() => {
-      this.timeline?.fitAll();
       this.timeline?.render();
     });
   }
@@ -1084,12 +1083,25 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (!cue) return;
     this.timingDraft.set(cue, startMs, endMs);
     this.renderTimingDraft();
+    if (commit) this.scrollAudioSelectionIntoView();
     if (commit && localStorage.getItem("aegisub-web.audio-autocommit") === "true") this.commitAudioTiming(false);
   }
 
   private audioSelection(): Cue | undefined {
     const cue = this.selectedCue();
     return cue && this.timingDraft.read(cue);
+  }
+
+  private scrollAudioSelectionIntoView(): void {
+    const range = this.audioSelection();
+    if (this.audio.element && range?.endMs && localStorage.getItem("aegisub-web.audio-autoscroll") !== "false") this.timeline?.showRange(range.startMs / 1000, range.endMs / 1000);
+  }
+
+  private audioLead(which: "in" | "out"): number {
+    const fallback = which === "in" ? 100 : 350;
+    const raw = localStorage.getItem(`aegisub-web.lead-${which}`);
+    const value = raw === null ? fallback : Number(raw);
+    return Number.isFinite(value) ? Math.max(0, value) : fallback;
   }
 
   private renderTimingDraft(): void {
@@ -1132,6 +1144,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     }
     this.renderDetail();
     this.renderTimingDraft();
+    this.scrollAudioSelectionIntoView();
   }
 
   private adjustAudioTiming(startDelta: number, endDelta: number): void {
@@ -1442,6 +1455,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     // playback and put the playhead on the new line immediately; otherwise audio from the
     // previous line continues while the edit box shows a different one.
     if (primaryChanged && c) this.stopAndSeek(c.startMs);
+    if (primaryChanged) this.scrollAudioSelectionIntoView();
     this.visualTransform?.refresh();
   }
 
@@ -3696,8 +3710,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (generation !== this.audioLoadGeneration || !ready) return;
     this.audio.bindVideo(this.video);
     this.setPlaybackRate(this.getPlaybackRate());
-    this.timeline?.fitAll();
     this.timeline?.render();
+    this.scrollAudioSelectionIntoView();
     const blob = this.audio.analysisBlob;
     if (!blob) return;
     const memoryGb = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
@@ -3806,7 +3820,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
           const max = Number.isFinite(v.duration) ? Math.max(0, v.duration - .001) : options.restoreTime;
           v.currentTime = Math.min(Math.max(0, options.restoreTime), max);
         }
-        this.timeline?.fitAll();
         this.timeline?.render();
         this.fitVideoSurface();
         this.updateVideoChrome();
@@ -5047,9 +5060,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "time/snap/start_video": if (this.video) this.setSelectedEdges("start", this.videoBoundaryTime("start")); return true;
       case "time/snap/end_video": if (this.video) this.setSelectedEdges("end", this.videoBoundaryTime("end")); return true;
       case "time/snap/scene": this.applyCueList(snapSelectedToScene(this.doc.cues, selected, this.frameKeyframes, playhead), selectedIds); return true;
-      case "time/lead/in": this.adjustAudioTiming(-(Number(localStorage.getItem("aegisub-web.lead-in")) || 100), 0); return true;
-      case "time/lead/out": this.adjustAudioTiming(0, Number(localStorage.getItem("aegisub-web.lead-out")) || 100); return true;
-      case "time/lead/both": this.adjustAudioTiming(-(Number(localStorage.getItem("aegisub-web.lead-in")) || 100), Number(localStorage.getItem("aegisub-web.lead-out")) || 100); return true;
+      case "time/lead/in": this.adjustAudioTiming(-this.audioLead("in"), 0); return true;
+      case "time/lead/out": this.adjustAudioTiming(0, this.audioLead("out")); return true;
+      case "time/lead/both": this.adjustAudioTiming(-this.audioLead("in"), this.audioLead("out")); return true;
       case "time/start/increase": this.adjustAudioTiming(10, 0); return true;
       case "time/start/decrease": this.adjustAudioTiming(-10, 0); return true;
       case "time/length/increase":
@@ -5154,21 +5167,24 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "audio/commit/stay": this.commitAudioTiming(false); return true;
       case "audio/commit/next": this.commitAudioTiming(true); return true;
       case "audio/commit/default": this.commitAudioTiming(true, true); return true;
-      case "audio/go_to": if (audioRange) this.timeline?.centerOn((audioRange.startMs + audioRange.endMs) / 2000); return true;
+      case "audio/go_to": if (audioRange) this.timeline?.showRange(audioRange.startMs / 1000, audioRange.endMs / 1000); return true;
       case "audio/go_to/start": if (audioRange) this.timeline?.centerOn(audioRange.startMs / 1000); return true;
       case "audio/go_to/end": if (audioRange) this.timeline?.centerOn(audioRange.endMs / 1000); return true;
-      case "audio/scroll/left": this.timeline?.panBy(-2); return true;
-      case "audio/scroll/right": this.timeline?.panBy(2); return true;
+      case "audio/scroll/left": this.timeline?.panPixels(-128); return true;
+      case "audio/scroll/right": this.timeline?.panPixels(128); return true;
       case "audio/stop": this.audio.stop(); return true;
       case "video/stop": if (this.video) this.stopAndSeek(this.video.currentTime * 1000); return true;
       case "audio/playback/speed/increase": this.setPlaybackRate(this.getPlaybackRate() + 0.05); return true;
       case "audio/playback/speed/decrease": this.setPlaybackRate(this.getPlaybackRate() - 0.05); return true;
-      case "audio/opt/autoscroll": this.toggleFollow(); return true;
+      case "audio/opt/autoscroll":
       case "audio/opt/autocommit":
       case "audio/opt/autonext": {
-        const key = command.endsWith("autocommit") ? "audio-autocommit" : "audio-autonext";
-        const checkbox = this.root.querySelector<HTMLInputElement>(`[data-audio-option="${key}"]`);
-        if (checkbox) { checkbox.checked = !checkbox.checked; checkbox.dispatchEvent(new Event("change")); }
+        const key = `audio-${command.slice("audio/opt/".length)}`;
+        const raw = localStorage.getItem(`aegisub-web.${key}`);
+        const enabled = !(raw === null ? key !== "audio-autocommit" : raw === "true");
+        localStorage.setItem(`aegisub-web.${key}`, String(enabled));
+        const control = this.root.querySelector<HTMLButtonElement>(`[data-audio-option="${key}"]`);
+        control?.classList.toggle("on", enabled); control?.setAttribute("aria-pressed", String(enabled));
         return true;
       }
       case "audio/opt/vertical_link": this.toast("Waveform gain auto-scales and playback volume stays with the browser; there are no separate native sliders to link."); return true;
