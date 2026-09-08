@@ -78,6 +78,13 @@ for (const fixture of oracle) test(`exports ${fixture.name} at source rate again
   await expect.poll(() => page.evaluate(() => { const h = (window as any).subHandle; return !!h.audio.analysisBlob && !h.root.querySelector('.se-audio-player')?.hasAttribute('data-loading'); })).toBe(true);
   // Aurora conversion finishes before publishing its WAV analysisBlob.
   if (/alac|aiff|caf/.test(fixture.name)) await expect.poll(() => page.evaluate(() => (window as any).subHandle.audio.analysisBlob?.type)).toBe("audio/wav");
+  if (fixture.codec === "flac") await expect(page.locator(".se-root")).toHaveAttribute("data-waveform-decoder", "worker-ready");
+  if (fixture.name === "tiny.flac") {
+    const notice = await page.request.get(new URL("audio-codecs/NOTICE.txt", page.url()).href);
+    expect(notice.status()).toBe(200); expect(await notice.text()).toContain("LGPL-3.0-or-later");
+    const source = await page.request.get(new URL("audio-codecs/codec-parser/src/CodecParser.js", page.url()).href);
+    expect(source.status()).toBe(200); expect(await source.text()).toContain("Copyright 2020-2023 Ethan Halsall");
+  }
   const wav = await downloadClip(page);
   expect(wav.readUInt32LE(24)).toBe(fixture.rate); expect(wav.readUInt16LE(22)).toBe(1); expect(wav.readUInt16LE(34)).toBe(16);
   expect(wav.readUInt32LE(40)).toBe(fixture.count * 2);

@@ -26,7 +26,7 @@
     "build": "tsc -p tsconfig.json && node scripts/fix-worker-urls.mjs",
     "build:demo": "npm run assets && vite build",
     "typecheck": "node node_modules/tsgo/bin/tsc -p tsconfig.json --noEmit",
-    "assets": "node scripts/copy-octopus-assets.mjs && node scripts/copy-libav-assets.mjs && node scripts/copy-alac-assets.mjs && node scripts/copy-dictionary-assets.mjs",
+    "assets": "node scripts/copy-octopus-assets.mjs && node scripts/copy-libav-assets.mjs && node scripts/copy-audio-codec-assets.mjs && node scripts/copy-alac-assets.mjs && node scripts/copy-dictionary-assets.mjs",
     "dev": "npm run assets && vite",
     "preview": "vite preview",
     "test": "vitest run",
@@ -40,6 +40,7 @@
     "prepare": "tsc -p tsconfig.json && node scripts/fix-worker-urls.mjs"
   },
   "dependencies": {
+    "@wasm-audio-decoders/flac": "0.2.11",
     "@huggingface/transformers": "^4.2.0",
     "codem-isoboxer": "^0.3.10",
     "dictionary-en": "4.0.0",

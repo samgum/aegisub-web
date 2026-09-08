@@ -8,6 +8,15 @@ const root = fileURLToPath(new URL("../test-corpus/", import.meta.url));
 const ffmpeg = process.env.FFMPEG ?? "ffmpeg", ffprobe = process.env.FFPROBE ?? "ffprobe";
 execFileSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=733:sample_rate=48000", "-t", "0.8", "-c:a", "ac3", "-b:a", "192k", `${root}audio-clip-ac3.mka`]);
 const files = ["tiny.wav", "tiny.flac", "tiny.opus", "tiny.ogg", "tiny-alac.m4a", "tiny-aac.m4a", "tiny.aiff", "tiny.caf", "audio-clip-ac3.mka"];
+for (const depth of [16, 24]) {
+  const pcm = Buffer.alloc(65536 * depth / 8), name = `audio-clip-depth${depth}.flac`;
+  for (let i = 0; i < 65536; i++) {
+    const value = depth === 16 ? i - 32768 : (i - 32768) * 256 + i % 256;
+    for (let byte = 0; byte < depth / 8; byte++) pcm[i * depth / 8 + byte] = value >> (byte * 8);
+  }
+  execFileSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-f", `s${depth}le`, "-ar", depth === 16 ? "48000" : "96000", "-ac", "1", "-i", "pipe:0", "-c:a", "flac", root + name], { input: pcm });
+  files.push(name);
+}
 for (const [extension, codec] of [["opus", "libopus"], ["ogg", "libvorbis"], ["m4a", "aac"], ["mka", "ac3"]]) {
   const name = `audio-clip-middle.${extension}`;
   execFileSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "aevalsrc=0.12*sin(2*PI*(191*t+173*t*t)):s=48000:d=4", "-c:a", codec, "-b:a", "128k", root + name]);

@@ -1,4 +1,7 @@
 import { ALL_FORMATS, AudioSampleSink, BlobSource, Input } from "mediabunny";
+import { registerFlacDecoder } from "./flac-decoder";
+
+registerFlacDecoder();
 
 const worker = self as unknown as { onmessage: ((event: MessageEvent<{ file: Blob }>) => void) | null; postMessage(message: unknown, transfer?: Transferable[]): void };
 worker.onmessage = async event => {

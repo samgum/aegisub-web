@@ -54,6 +54,12 @@ license texts and reproducible source/version hashes are stored in `vendor/fonts
 ## Runtime libraries
 
 - `mediaplay` — MIT.
+- `@wasm-audio-decoders/flac` 0.2.11 and its common wrapper — MIT;
+  the contained libFLAC is BSD-3-Clause. `codec-parser` 2.5.0 is LGPL-3.0-or-later;
+  `@eshaz/web-worker` is Apache-2.0 and `simple-yenc` is MIT. Complete notices and
+  the unchanged LGPL parser source are redistributed under `audio-codecs/` by the
+  asset build script. Sources: https://github.com/eshaz/wasm-audio-decoders
+  and https://github.com/xiph/flac. This is a packet decoder, not an editor foundation.
 - `mediabunny` — Mozilla Public License 2.0.
 - `opencc-js` — MIT and Apache-2.0; bundled OpenCC dictionary derivatives retain their
   upstream notices.

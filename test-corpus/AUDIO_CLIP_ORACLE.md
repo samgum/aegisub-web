@@ -5,6 +5,9 @@ AAC/ALAC/AIFF/CAF fixtures with FFmpeg, and generates a mono AC-3 Matroska fixtu
 four 4-second chirps (Opus, Vorbis, AAC and AC-3). `audio-clip-oracle.json` contains 31
 independently decoded PCM points, including first/last, for each tested interval.
 The mid-file intervals start at 3001 ms, beyond the exporter's 1-second preroll.
+Two additional FLAC sweeps cover every signed PCM16 result, once as 16-bit/48 kHz
+input and once as 24-bit/96 kHz input with nonzero low bytes. The unit decoder test
+compares every result, not just the sampled browser oracle points.
 
 Regenerate intentionally with `node scripts/gen-audio-clip-oracle.mjs` (FFmpeg and
 FFprobe on PATH, or `FFMPEG`/`FFPROBE`). Inputs, reference JSON and the generator are

@@ -392,3 +392,20 @@ The same visual check exposed missing CJK fallback on non-ASS files. Font prepar
 change detection now include plain formats. The SRT regression failed with two identical
 tofu-box images before the fix; it now requires distinct ink for 甲甲/乙乙 and checks VTT
 replacement without closing virtual video. Unit coverage also includes LRC and TTML.
+
+macOS CI subsequently identified the FLAC error as `InternalAudioDecoderCocoa decoding
+failed`, despite a positive capability check. FLAC decoding in the waveform and export
+workers now uses pinned libFLAC-WASM (`@wasm-audio-decoders/flac` 0.2.11) on individual
+demuxed packets. No full-file fallback or native AudioDecoder/AudioContext is required.
+The wrapper's positive-full-scale float normalization is reversed before native PCM16
+conversion; actual 16-bit and 24-bit FLAC sweeps check all 65,536 signed PCM16 values.
+Unusual FLAC bit depths outside 8/16/24/32 are explicitly rejected; original 32-bit integer
+bit identity is not claimed through a Float32 wrapper. Licenses and the unchanged LGPL
+codec-parser source are included in the published assets with replacement/build guidance.
+
+The follow-up passes 434 unit cases (11 existing skips), 68 Cypress cases and 196
+Chromium/Firefox/Android workflow cases (35 explicit skips). Twelve FLAC export/waveform
+checks also pass in Chromium and the local macOS/iPad/iPhone WebKit profiles, including
+without native AudioDecoder. The official npm audit reports zero known vulnerabilities;
+all five new package integrity hashes match the official npm registry. Real macOS CI
+must still validate the published replacement before the Safari regression is closed.
