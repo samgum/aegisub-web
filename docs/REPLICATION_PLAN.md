@@ -320,3 +320,14 @@ Local full suite: 404 unit cases pass (11 existing skips), 68 Cypress cases pass
 also cover stepping from a paused playback frame and accumulating three immediate steps.
 Native desktop pixel identity for every font/effect, legacy decoder paths, custom timecode
 remapping and physical-device behavior still require the remaining full-objective audit.
+
+Follow-up checks also exercise rapid same-frame edits with widely separated drawing
+positions, so an old but nearby image cannot satisfy the pixel check. WebKit may submit
+one last frame after pause; the animated-drawing oracle now samples frame metadata and
+pixels together and requires three matching samples with the unchanged 2px tolerance.
+An iPhone rapid audio-switch check exposed a stalled pause/replay path. Output gain now
+coalesces pending resumes and waits for an in-flight suspension before resuming; native
+media pauses immediately, while context suspension is deferred by a 300ms idle interval.
+Still-playing muted video is not mistaken for idle audio. Unit checks cover rapid replay,
+late initial resume, muted playback and teardown; this is defensive lifecycle hardening,
+not a claim about a proven browser-internal root cause.

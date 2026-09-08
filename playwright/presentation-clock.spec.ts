@@ -7,9 +7,15 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     const NativeWorker = window.Worker;
     (window as any).renderClockMessages = [];
+    (window as any).canvasFrameMessages = [];
     window.Worker = class extends NativeWorker {
       private subtitleWorker: boolean;
-      constructor(url: string | URL, options?: WorkerOptions) { super(url, options); this.subtitleWorker = String(url).includes("subtitles-octopus-worker"); }
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options); this.subtitleWorker = String(url).includes("subtitles-octopus-worker");
+        this.addEventListener("message", event => { if (this.subtitleWorker && event.data?.target === "canvas" && event.data.op === "renderCanvas") {
+          const frames = (window as any).canvasFrameMessages; frames.push(event.data.time); if (frames.length > 100) frames.shift();
+        } });
+      }
       postMessage(message: any, transfer?: any) {
         if (this.subtitleWorker && message?.target === "video" && typeof message.currentTime === "number") {
           const messages = (window as any).renderClockMessages as number[]; messages.push(message.currentTime); if (messages.length > 100) messages.shift();
@@ -108,13 +114,21 @@ test("an animated ASS drawing is rendered at the paused frame's position", async
     const bytes = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;
     let minX = Infinity, maxX = -1;
     for (let i = 0; i < bytes.length; i += 4) if (bytes[i] > 200 && bytes[i + 1] < 40 && bytes[i + 2] < 40 && bytes[i + 3] > 180) { const x = i / 4 % canvas.width; minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
-    return maxX < 0 ? null : { x: minX / canvas.width * 384, width: (maxX - minX + 1) / canvas.width * 384 };
+    const video = document.querySelector(".se-playerhost video") as HTMLVideoElement & { lastPresentedTime: number };
+    const frameMs = Math.floor(Math.floor(video.lastPresentedTime * 24 + 1e-4) * 1000 / 24 + 1e-6);
+    return maxX < 0 ? null : { x: minX / canvas.width * 384, width: (maxX - minX + 1) / canvas.width * 384, frameMs };
   });
-  await expect.poll(position).not.toBeNull(); const actual = (await position())!;
-  // The centre of the 100ms move interval is exactly x=150 at the frame timestamp.
-  // This is a pixel oracle derived from the drawing geometry, not the renderer's clock log.
-  expect(Math.abs(actual.x - 150)).toBeLessThan(2); expect(Math.abs(actual.width - 12)).toBeLessThan(2);
-  await info.attach("drawing-clock", { body: JSON.stringify({ ...reference, actual }), contentType: "application/json" });
+  let actual: Awaited<ReturnType<typeof position>> = null, expectedX = 0, stable = 0;
+  // WebKit may submit one final frame after the pause event. Derive the expected
+  // drawing from the frame actually present in the SAME sample as its pixels, not
+  // from a timestamp captured before that final submission. Keep the 2px requirement.
+  await expect.poll(async () => {
+    actual = await position(); if (!actual) return stable = 0;
+    expectedX = Math.max(50, Math.min(250, 150 + (actual.frameMs - reference.frameMs) * 2));
+    stable = Math.abs(actual.x - expectedX) < 2 && Math.abs(actual.width - 12) < 2 ? stable + 1 : 0;
+    return stable;
+  }, { intervals: [50, 100, 100] }).toBeGreaterThanOrEqual(3);
+  await info.attach("drawing-clock", { body: JSON.stringify({ ...reference, actual, expectedX }), contentType: "application/json" });
   await page.screenshot({ path: info.outputPath("paused-drawing.png") });
 });
 
@@ -159,4 +173,25 @@ test("frame stepping after playback starts from the displayed frame and accumula
   await page.evaluate(() => { const h = (window as any).subHandle; for (let i = 0; i < 3; i++) h.runAegisubCommand("video/frame/next"); });
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeCloseTo((frame + 4) / 24, 4);
   await info.attach("presentation-step", { body: JSON.stringify({ presented, startFrame: frame, finalTime: await video.evaluate((v: HTMLVideoElement) => v.currentTime) }), contentType: "application/json" });
+});
+
+test("rapid same-frame edits always display the LAST drawing, not an earlier result", async ({ page }, info) => {
+  const video = page.locator(".se-playerhost video"); await video.evaluate((v: HTMLVideoElement) => v.currentTime = 1.5);
+  await expect.poll(() => video.evaluate((v: HTMLVideoElement) => !v.seeking && (v as any).lastPresentedTime >= 1.49)).toBe(true);
+  const leftEdge = () => page.locator(".se-playerhost .libassjs-canvas").evaluate((canvas: HTMLCanvasElement) => {
+    const data = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data; let left = Infinity;
+    for (let i = 0; i < data.length; i += 4) if (data[i] > 200 && data[i + 1] < 40 && data[i + 2] < 40 && data[i + 3] > 180) left = Math.min(left, i / 4 % canvas.width);
+    return left / canvas.width * 384;
+  });
+  for (let iteration = 0; iteration < 10; iteration++) {
+    const expected = iteration % 2 ? 150 : 250;
+    await page.evaluate(iteration => {
+      const h = (window as any).subHandle, text = h.getText(); (window as any).canvasFrameMessages = [];
+      const drawing = (x: number) => `{\\an7\\pos(${x},10)\\bord0\\shad0\\1c&H0000FF&\\p1}m 0 0 l 12 0 12 12 0 12`;
+      h.player.setSubtitleText(text.replace("Hello, world.", drawing(50 + iteration)), "earlier.ass");
+      h.player.setSubtitleText(text.replace("Hello, world.", drawing(iteration % 2 ? 150 : 250)), "latest.ass");
+    }, iteration);
+    try { await expect.poll(async () => Math.abs(await leftEdge() - expected)).toBeLessThan(2); }
+    finally { await info.attach(`same-frame-${iteration}`, { body: JSON.stringify({ expected, actual: await leftEdge(), frameTimes: await page.evaluate(() => (window as any).canvasFrameMessages) }), contentType: "application/json" }); }
+  }
 });
