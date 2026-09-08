@@ -1,5 +1,7 @@
 import type { MediaPlayerHandle } from "mediaplay";
 import { createEmbeddedPlayer } from "./embedded-player";
+import type { PlaybackClock } from "./playback-clock";
+import { DummyAudioSource, type DummyAudioKind } from "./dummy-audio";
 import { decodeAuroraAudioToWav, fileHasAlac } from "./alac";
 
 export function isAudioFile(file: File): boolean {
@@ -17,7 +19,8 @@ const audioMime: Record<string, string> = {
 export class AudioWorkspace {
   file: File | null = null;
   analysisBlob: Blob | null = null;
-  element: HTMLMediaElement | null = null;
+  element: (PlaybackClock & { preservesPitch: boolean }) | null = null;
+  synthetic: DummyAudioSource | null = null;
   fromVideo = false;
   private player: MediaPlayerHandle | null = null;
   private generation = 0;
@@ -80,12 +83,13 @@ export class AudioWorkspace {
         embedded: true,
         onError: (message) => { if (generation === this.generation) this.callbacks.error(message); },
       });
-      this.element = this.player.getMediaElement() ?? null;
-      if (this.element) {
-        this.element.controls = false;
-        this.element.setAttribute("playsinline", "");
+      const media = this.player.getMediaElement() ?? null;
+      this.element = media;
+      if (media) {
+        media.controls = false;
+        media.setAttribute("playsinline", "");
         for (const event of ["play", "pause", "ended", "timeupdate", "loadedmetadata", "seeked"]) {
-          this.element.addEventListener(event, () => {
+          media.addEventListener(event, () => {
             if (generation === this.generation) this.callbacks.changed();
           });
         }
@@ -101,9 +105,20 @@ export class AudioWorkspace {
     }
   }
 
+  openSynthetic(kind: DummyAudioKind): void {
+    this.close();
+    const generation = this.generation;
+    const source = new DummyAudioSource(kind, message => { if (generation === this.generation) this.callbacks.error(message); });
+    this.synthetic = source; this.element = source;
+    this.host.dataset.filename = source.name;
+    this.host.dataset.sourceKind = kind;
+    for (const event of ["play", "pause", "ended", "timeupdate", "seeked"]) source.addEventListener(event, () => { if (generation === this.generation) this.callbacks.changed(); });
+    this.callbacks.changed();
+  }
+
   /** Video transport owns its own position; audio follows only during video playback.
    * Audio-only audition deliberately leaves the displayed video frame paused. */
-  bindVideo(video: HTMLMediaElement | null): void {
+  bindVideo(video: PlaybackClock | null): void {
     this.unbindVideo?.();
     this.unbindVideo = null;
     this.followingVideo = false;
@@ -181,6 +196,7 @@ export class AudioWorkspace {
     this.stop();
     this.player?.destroy();
     this.player = null;
+    this.synthetic?.dispose(); this.synthetic = null;
     this.element = null;
     this.file = null;
     this.analysisBlob = null;
@@ -189,6 +205,7 @@ export class AudioWorkspace {
     delete this.host.dataset.filename;
     delete this.host.dataset.loading;
     delete this.host.dataset.fallback;
+    delete this.host.dataset.sourceKind;
     this.callbacks.changed();
   }
 

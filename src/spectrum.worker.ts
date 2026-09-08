@@ -1,5 +1,8 @@
+import { dummyNoiseSample } from "./dummy-audio";
+
 interface Request {
-  samples: ArrayBuffer;
+  samples?: ArrayBuffer;
+  generated?: { kind: "blank" | "noise"; sampleCount: number };
   sampleRate: number;
   columnsPerSecond: number;
   bins: number;
@@ -45,23 +48,25 @@ function fft(real: Float64Array, imag: Float64Array): void {
 }
 
 worker.onmessage = (event) => {
-  const { samples, sampleRate, columnsPerSecond, bins } = event.data;
-  const pcm = new Float32Array(samples);
+  const { samples, generated, sampleRate, columnsPerSecond, bins } = event.data;
+  const pcm = samples ? new Float32Array(samples) : null;
+  const sampleCount = pcm?.length ?? generated?.sampleCount ?? 0;
   const fftSize = 512;
   const hop = Math.max(1, Math.round(sampleRate / columnsPerSecond));
-  const columns = Math.max(1, Math.ceil(pcm.length / hop));
+  const columns = Math.max(1, Math.ceil(sampleCount / hop));
   const values = new Uint8Array(columns * bins);
   const real = new Float64Array(fftSize);
   const imag = new Float64Array(fftSize);
   const magnitudes = new Float64Array(fftSize / 2);
   const minFrequency = 45;
   const maxFrequency = sampleRate / 2;
-  for (let column = 0; column < columns; column += 1) {
+  for (let column = 0; column < columns && generated?.kind !== "blank"; column += 1) {
     const center = column * hop;
     for (let index = 0; index < fftSize; index += 1) {
       const sampleIndex = center + index - fftSize / 2;
       const window = .5 - .5 * Math.cos(2 * Math.PI * index / (fftSize - 1));
-      real[index] = (sampleIndex >= 0 && sampleIndex < pcm.length ? pcm[sampleIndex] : 0) * window;
+      const value = sampleIndex >= 0 && sampleIndex < sampleCount ? pcm ? pcm[sampleIndex] : dummyNoiseSample(sampleIndex) : 0;
+      real[index] = value * window;
       imag[index] = 0;
     }
     fft(real, imag);

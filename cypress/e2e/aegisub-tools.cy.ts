@@ -281,15 +281,17 @@ describe("upstream command compatibility", () => {
     handle().then((editor) => expect(editor.getText()).to.contain("\\clip("));
   });
 
-  it("generates long dummy media with WebCodecs", () => {
+  it("creates a long virtual video without a media encoder", () => {
+    cy.window().then(window => Object.defineProperty(window, "VideoEncoder", { configurable: true, value: undefined }));
     handle().then((editor) => expect(editor.runAegisubCommand("video/open/dummy")).to.equal(true));
     cy.get('.ad-modal input[type="number"]').eq(0).clear().type("640");
     cy.get('.ad-modal input[type="number"]').eq(1).clear().type("360");
-    cy.get('.ad-modal input[type="number"]').eq(2).clear().type("120");
-    cy.get('.ad-modal input[type="number"]').eq(3).clear().type("24");
+    cy.contains(".ad-field", "时长（帧）").find("input").clear().type("2880");
+    cy.contains(".ad-field", "帧率").find("input").clear().type("24");
     cy.contains(".ad-foot button", "创建").click();
     cy.get('.se-root[data-dummy-status="ready"]', { timeout: 20000 }).should("exist");
-    cy.get("video").should(($video) => expect(($video[0] as HTMLVideoElement).duration).to.be.greaterThan(100));
+    cy.get(".se-dummy-video").should(($canvas) => expect(($canvas[0] as unknown as { duration: number }).duration).to.equal(120));
+    cy.get("video").should("not.exist");
   });
 
   it("decodes audio and renders a real FFT spectrum", () => {

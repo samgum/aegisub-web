@@ -64,7 +64,7 @@ function injectCss(): void {
 const H = 120;
 const EDGE = 6;
 
-export function openKaraoke(cue: Cue, video: HTMLMediaElement | null, peaks: { peaks: Float32Array; peaksPerSec: number } | null, defaultSecondaryHex: string, onApply: (text: string) => void): void {
+export function openKaraoke(cue: Cue, video: import("./playback-clock").PlaybackClock | null, peaks: { peaks: Float32Array; peaksPerSec: number } | null, defaultSecondaryHex: string, onApply: (text: string) => void): void {
   injectCss();
   const startMs = cue.startMs;
   const durMs = Math.max(1, cue.endMs - cue.startMs);

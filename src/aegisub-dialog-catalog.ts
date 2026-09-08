@@ -22,7 +22,7 @@ export const AEGISUB_DIALOG_PARITY: Record<UpstreamAegisubDialog, DialogParityEn
   "autosave": { status: "implemented", surface: "IndexedDB autosave-version picker" },
   "colorpicker": { status: "implemented", surface: "Accessible HTML colour wells and ASS override colour entry" },
   "detached-video": { status: "browser-replacement", surface: "Browser Picture-in-Picture" },
-  "dummy-video": { status: "partial", surface: "WebCodecs generator; virtual frame provider and encoder-free path pending" },
+  "dummy-video": { status: "partial", surface: "Canvas provider, fractional FPS, frame count and checkerboard; exhaustive native comparison pending" },
   "export-ebu3264": { status: "implemented", surface: "EBU Tech 3264 options in Export" },
   "export": { status: "implemented", surface: "Ordered filter-chain and format Export dialog" },
   "fonts-collector": { status: "partial", surface: "Uploaded/local-font collector; override font matching and fallback accuracy unverified" },

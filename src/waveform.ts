@@ -48,6 +48,7 @@ export class Timeline {
   private width = 0;
   private height = MIN_H;
   private peaks: Float32Array | null = null;
+  private peakProvider: ((start: number, end: number) => number) | null = null;
   private peaksPerSec = PEAKS_PER_SEC;
   private spectrum: SpectrumData | null = null;
   private audioView: "waveform" | "spectrum" = "waveform";
@@ -104,6 +105,7 @@ export class Timeline {
 
   // Absolute-peak buckets (PEAKS_PER_SEC per second) mixed down from the audio buffer.
   setPeaks(peaks: Float32Array, peaksPerSec = PEAKS_PER_SEC): void {
+    this.peakProvider = null;
     this.peaks = peaks;
     this.peaksPerSec = peaksPerSec;
     this.fitAll();
@@ -111,8 +113,14 @@ export class Timeline {
   }
 
   clearPeaks(): void {
+    this.peakProvider = null;
     this.peaks = null;
     this.render();
+  }
+
+  setPeakProvider(provider: (start: number, end: number) => number): void {
+    this.peaks = null; this.peakProvider = provider;
+    this.fitAll(); this.render();
   }
 
   clearSpectrum(): void {
@@ -252,7 +260,7 @@ export class Timeline {
   }
 
   private drawWaveform(): void {
-    if (!this.peaks) return;
+    if (!this.peaks && !this.peakProvider) return;
     const ctx = this.ctx;
     const midY = RULER_H + (this.height - RULER_H) / 2;
     const halfH = (this.height - RULER_H) / 2 - 4;
@@ -263,10 +271,13 @@ export class Timeline {
       const t0 = this.secOf(x);
       const t1 = this.secOf(x + 1);
       let peak = 0;
-      const b0 = Math.max(0, Math.floor(t0 * this.peaksPerSec));
-      const b1 = Math.min(this.peaks.length - 1, Math.ceil(t1 * this.peaksPerSec));
-      for (let b = b0; b <= b1; b++) if (this.peaks[b] > peak) peak = this.peaks[b];
-      if (b1 < 0 || b0 >= this.peaks.length) continue;
+      if (this.peakProvider) peak = this.peakProvider(t0, t1);
+      else if (this.peaks) {
+        const b0 = Math.max(0, Math.floor(t0 * this.peaksPerSec));
+        const b1 = Math.min(this.peaks.length - 1, Math.ceil(t1 * this.peaksPerSec));
+        for (let b = b0; b <= b1; b++) if (this.peaks[b] > peak) peak = this.peaks[b];
+        if (b1 < 0 || b0 >= this.peaks.length) continue;
+      }
       const h = peak * halfH;
       ctx.moveTo(x + 0.5, midY - h);
       ctx.lineTo(x + 0.5, midY + h);

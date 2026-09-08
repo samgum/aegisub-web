@@ -1,10 +1,10 @@
-export function openVideoDetails(file: File, media: HTMLMediaElement, frameRate: number): void {
+export function openVideoDetails(file: Pick<File, "name" | "type" | "size">, media: { duration: number; videoWidth?: number; videoHeight?: number }, frameRate: number): void {
   if (!document.getElementById("aegisub-web-video-details-style")) {
     const style = document.createElement("style"); style.id = "aegisub-web-video-details-style";
     style.textContent = `.ad-back{position:fixed;inset:0;z-index:1650;background:rgba(0,0,0,.58);display:grid;place-items:center;padding:16px}.ad-modal{width:min(650px,100%);background:var(--se-bg,#1d2025);color:var(--se-fg,#e9ebef);border:1px solid var(--se-border,#373b44);border-radius:12px}.ad-head{display:flex;align-items:center;gap:8px;padding:11px 14px;background:var(--se-head,#24272d);border-bottom:1px solid var(--se-border,#373b44)}.ad-head h2{font-size:15px;margin:0;flex:1}.ad-body{padding:14px}.ad-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.ad-field{display:grid;gap:5px;font-size:11px;color:var(--se-muted,#9aa2ae)}.ad-field input{font:inherit;padding:7px;border:1px solid var(--se-border,#373b44);border-radius:6px;background:var(--se-bg,#1d2025);color:inherit}.ad-btn{font:inherit;padding:7px 11px;border:1px solid var(--se-border,#373b44);border-radius:7px;background:var(--se-head,#24272d);color:inherit;cursor:pointer}`;
     document.head.append(style);
   }
-  const video = media as HTMLVideoElement;
+  const video = media;
   const width = video.videoWidth || 0;
   const height = video.videoHeight || 0;
   const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
@@ -13,7 +13,7 @@ export function openVideoDetails(file: File, media: HTMLMediaElement, frameRate:
   const fields: [string, string][] = [
     ["File name", file.name], ["MIME type", file.type || "unknown"], ["File size", `${(file.size / 1024 / 1024).toFixed(2)} MiB`],
     ["FPS", frameRate.toFixed(3)], ["Resolution", width && height ? `${width}×${height} (${width / divisor}:${height / divisor})` : "unknown"],
-    ["Length", `${Math.round(duration * frameRate)} frames (${duration.toFixed(3)} s)`], ["Decoder", "Browser HTMLMediaElement + mediaplay/WebCodecs"],
+    ["Length", `${Math.round(duration * frameRate)} frames (${duration.toFixed(3)} s)`], ["Decoder", file.type === "virtual/canvas" ? "Canvas / virtual frame clock" : "Browser HTMLMediaElement + mediaplay/WebCodecs"],
   ];
   const back = document.createElement("div"); back.className = "ad-back";
   const modal = document.createElement("div"); modal.className = "ad-modal";

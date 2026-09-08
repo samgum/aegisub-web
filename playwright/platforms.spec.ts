@@ -317,20 +317,19 @@ test("decodes ALAC audio and does not retain local media blobs across refresh", 
 });
 
 test("creates a configured blank video instead of a placeholder command", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "windows-chromium", "WebCodecs encoder smoke path");
+  void testInfo;
   await page.goto("/");
   await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator('.quickbar [data-aegisub-command="video/open/dummy"]').click();
-  const numbers = page.locator('.ad-modal input[type="number"]');
-  await numbers.nth(0).fill("320");
-  await numbers.nth(1).fill("180");
-  await numbers.nth(2).fill("2");
-  await numbers.nth(3).fill("24");
+  await page.getByLabel("宽度", { exact: true }).fill("320");
+  await page.getByLabel("高度", { exact: true }).fill("180");
+  await page.getByLabel("时长（帧）", { exact: true }).fill("48");
+  await page.getByLabel("帧率", { exact: true }).fill("24");
   await page.getByRole("button", { name: "创建" }).click();
   await expect(page.locator('.se-root[data-dummy-status="ready"]')).toBeVisible({ timeout: 30_000 });
-  const video = page.locator(".se-playerhost video");
-  await expect.poll(() => video.evaluate((element) => element.duration)).toBe(2);
-  expect(await video.evaluate((element) => [element.videoWidth, element.videoHeight, element.controls])).toEqual([320, 180, false]);
+  const video = page.locator(".se-dummy-video");
+  await expect.poll(() => video.evaluate((element: any) => element.duration)).toBe(2);
+  expect(await video.evaluate((element: any) => [element.videoWidth, element.videoHeight, element.controls])).toEqual([320, 180, false]);
 });
 
 test("renders CJK glyphs and timed ASS effects at the selected frame", async ({ page }, testInfo) => {

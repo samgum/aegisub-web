@@ -78,8 +78,8 @@ import { resolveAegisubContextHotkey, resolveAegisubDefaultHotkey, resolveAegisu
 import { listAutomationExtensions, runAutomationExtension } from "./automation";
 import { runLuaAutomation } from "./lua-automation";
 import { openVectorClip, type VectorClipHandle, type VectorClipMode } from "./vector-clip";
-import { computeSpectrum, type SpectrumData } from "./spectrum";
-import { createDummyVideo } from "./dummy-media";
+import { computeSpectrum, computeDummySpectrum, type SpectrumData } from "./spectrum";
+import { createDummyVideoPlayer, parseDummyFrameRate, type DummyVideoElement, type DummyVideoOptions } from "./dummy-video";
 import {
   openExportDialog,
   openPasteOverDialog,
@@ -100,6 +100,12 @@ export interface SubtitleInput {
   text: string;
   filename?: string;
 }
+
+type PreviewMedia = HTMLMediaElement | DummyVideoElement;
+type PreviewPlayer = Omit<MediaPlayerHandle, "getMediaElement"> & {
+  getMediaElement(): PreviewMedia | undefined;
+  setSubtitleFonts?(fonts: string[]): void;
+};
 
 // A vertex of an ASS drawing, in PlayRes coordinates. `type` is how it connects from the
 // previous vertex: "m" start, "l" straight line, "b" cubic bezier (with control points),
@@ -315,9 +321,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private overscanOverlay: HTMLDivElement | null = null;
   private assistant: AssistantHandle | null = null;
   private vectorClip: VectorClipHandle | null = null;
-  private debugNoise = false;
-  private debugAudioContext: AudioContext | null = null;
-  private debugNoiseSource: AudioBufferSourceNode | null = null;
   private videoZoom = 1;
   private videoPanX = 0;
   private videoPanY = 0;
@@ -361,13 +364,14 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private leftEl!: HTMLDivElement;
   private headEl!: HTMLDivElement;
   private rightEl!: HTMLDivElement;
-  private player: MediaPlayerHandle | null = null;
-  private video: HTMLMediaElement | null = null;
+  private player: PreviewPlayer | null = null;
+  private video: PreviewMedia | null = null;
   private mediaFile: File | null = null; // the original file; streamed from disk (never held whole in RAM)
   private mediaContainer: "mkv" | "mp4" = "mp4"; // detected at load, for save-into-video
   private subtitleFileHandle: FileSystemFileHandle | null = null;
   private decodedMono16k: Float32Array | null = null;
   private spectrumData: SpectrumData | null = null;
+  private spectrumRequest = 0;
   private spectrumCancel: (() => void) | null = null;
   private audioViewMode: "waveform" | "spectrum" = "waveform";
   private timeline: Timeline | null = null;
@@ -779,8 +783,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
     strip.append(audioHost);
     this.audio = new AudioWorkspace(audioHost, {
       changed: () => {
-        this.root.dataset.audioName = this.audio?.file?.name ?? "";
+        this.root.dataset.audioName = this.audio?.file?.name ?? this.audio?.synthetic?.name ?? "";
         this.root.dataset.audioPlaying = String(this.audio?.playing ?? false);
+        this.root.dataset.audioSource = this.audio?.synthetic?.kind ?? (this.audio?.file ? "file" : "");
         if (audioHost.dataset.fallback) this.root.dataset.audioFallback = audioHost.dataset.fallback;
         else delete this.root.dataset.audioFallback;
         if (this.video) this.video.muted = !!this.audio?.element;
@@ -929,7 +934,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (this.videoZoomLabel) this.videoZoomLabel.textContent = `${Math.round(this.videoZoom * 100)}%`;
   }
 
-  private configureVideoSurface(media: HTMLMediaElement, host: HTMLDivElement): void {
+  private configureVideoSurface(media: PreviewMedia, host: HTMLDivElement): void {
     media.controls = false;
     media.removeAttribute("controls");
     // Removing native controls also removes the element from some browsers' tab order.
@@ -955,7 +960,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       stage.style.willChange = "transform";
     }
     const wheel = (event: WheelEvent): void => {
-      if (!this.videoStage || media.tagName !== "VIDEO") return;
+      if (!this.videoStage) return;
       event.preventDefault();
       const normalized = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 18 :
         event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * host.clientHeight : event.deltaY;
@@ -1725,7 +1730,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (mode === "text") {
       bar.appendChild(
         iconBtn(ICON.mic, t("tipKaraoke"), () =>
-          openKaraoke(cue, this.video ?? null, this.wavePeaks, this.cueColorHex(cue, "2c", "SecondaryColour"), (text) => {
+          openKaraoke(cue, this.audio.element, this.wavePeaks, this.cueColorHex(cue, "2c", "SecondaryColour"), (text) => {
             ta.value = text;
             this.updateCue(cue.id, { text }, true);
           }),
@@ -3619,6 +3624,11 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private reloadMediaPreservingState(scanEmbedded = false): void {
+    if (this.player?.setSubtitleFonts) {
+      this.player.setSubtitleFonts(this.prepareEmbeddedFontUrls());
+      this.pushSubtitles(true);
+      return;
+    }
     if (!this.mediaFile || !this.video) return;
     const file = this.mediaFile;
     const restoreTime = this.video.currentTime;
@@ -3639,8 +3649,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.video?.pause();
     this.video?.removeEventListener("timeupdate", this.onTimeUpdate);
     this.video?.removeEventListener("pointermove", this.onVideoPointer);
-    this.video?.removeEventListener("play", this.startDebugNoise);
-    this.video?.removeEventListener("pause", this.stopDebugNoise);
     this.video = null;
     this.videoHost = null;
     this.videoStage = null;
@@ -3703,6 +3711,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private resetAudioAnalysis(): void {
+    this.spectrumRequest++;
     this.waveAbort?.abort();
     this.waveAbort = null;
     this.decodedMono16k = null;
@@ -3734,8 +3743,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
     options: { restoreTime?: number; restorePaused?: boolean; scanEmbedded?: boolean; preserveView?: boolean; dummyClock?: { fps: number; duration: number } } = {},
   ): Promise<void> {
     if (isAudioFile(file)) { await this.loadAudio(file); return; }
+    delete this.root.dataset.dummyStatus;
     const generation = ++this.mediaLoadGeneration;
-    const replaceAudio = !options.preserveView && (!this.audio.file || this.audio.fromVideo);
+    const replaceAudio = !options.preserveView && ((!this.audio.file && !this.audio.synthetic) || this.audio.fromVideo);
     if (!options.preserveView) {
       this.frameIndexAbort?.abort();
       this.videoFrameIndex = null;
@@ -3747,8 +3757,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
       else void this.indexVideoFrames(file);
     }
     this.setMobilePane("video");
-    this.stopDebugNoise();
-    this.debugNoise = false;
     this.clearPlaybackRuntime();
     if (this.posOverlay) this.exitPosition();
     if (this.clipOverlay) this.exitClip();
@@ -3792,8 +3800,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
       this.configureVideoSurface(v, host);
       v.addEventListener("timeupdate", this.onTimeUpdate);
       v.addEventListener("pointermove", this.onVideoPointer);
-      v.addEventListener("play", this.startDebugNoise);
-      v.addEventListener("pause", this.stopDebugNoise);
       const metadataReady = () => {
         if (generation !== this.mediaLoadGeneration) return;
         if (options.restoreTime !== undefined) {
@@ -3908,7 +3914,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   // Feed the current (serialized) document to the preview so it renders the live edits.
   private pushSubtitles(immediate = false): void {
     if (!this.player) return;
-    if (this.video && this.mediaFile && JSON.stringify(bundledPreviewFonts(this.doc)) !== this.bundledFontSignature) {
+    if (this.video && (this.mediaFile || this.player?.setSubtitleFonts) && JSON.stringify(bundledPreviewFonts(this.doc)) !== this.bundledFontSignature) {
       this.reloadMediaPreservingState(false);
       return;
     }
@@ -3970,8 +3976,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.refreshPausedSubtitleFrame();
   }
 
-  private onVideoPointer = (event: PointerEvent): void => {
-    if (!this.video) return;
+  private onVideoPointer = (event: Event): void => {
+    if (!(event instanceof PointerEvent) || !this.video) return;
     const rect = this.video.getBoundingClientRect();
     const resolution = getPlayRes(this.doc);
     this.lastVideoPointer = {
@@ -3980,127 +3986,118 @@ class SubtitleEditor implements SubtitleEditorHandle {
     };
   };
 
-  private startDebugNoise = (): void => {
-    if (!this.debugNoise || this.debugNoiseSource) return;
-    const context = (this.debugAudioContext ??= new AudioContext());
-    const buffer = context.createBuffer(1, context.sampleRate * 2, context.sampleRate);
-    const channel = buffer.getChannelData(0);
-    for (let index = 0; index < channel.length; index += 1) channel[index] = (Math.random() * 2 - 1) * .12;
-    const source = context.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-    source.connect(context.destination);
-    source.start();
-    this.debugNoiseSource = source;
-    void context.resume();
-  };
-
-  private stopDebugNoise = (): void => {
-    try { this.debugNoiseSource?.stop(); } catch { /* already stopped */ }
-    this.debugNoiseSource?.disconnect();
-    this.debugNoiseSource = null;
-  };
-
-  private chooseDummyVideo(): Promise<{ width: number; height: number; durationSeconds: number; frameRate: number; color: string } | null> {
-    return new Promise((resolve) => {
+  private chooseDummyVideo(): Promise<DummyVideoOptions | null> {
+    return new Promise(resolve => {
+      let last: Partial<DummyVideoOptions & { fpsText: string }> = {};
+      try {
+        const saved = JSON.parse(localStorage.getItem("aegisub-web.dummy-video") ?? "{}");
+        if (saved && typeof saved === "object" && !Array.isArray(saved)) last = saved;
+      } catch { /* use defaults */ }
       const back = el("div", "ad-back");
       const modal = el("form", "ad-modal") as HTMLFormElement;
-      const head = el("div", "ad-head");
-      head.appendChild(el("h2", "", "使用空白视频"));
-      const body = el("div", "ad-body");
-      const grid = el("div", "ad-grid three");
-      const field = (label: string, input: HTMLInputElement | HTMLSelectElement): HTMLElement => {
-        const wrap = el("label", "ad-field", label);
-        wrap.append(input);
-        return wrap;
+      const head = el("div", "ad-head"); head.append(el("h2", "", "使用空白视频"));
+      const body = el("div", "ad-body"), grid = el("div", "ad-grid");
+      const field = (label: string, input: HTMLElement) => { const wrap = el("label", "ad-field", label); wrap.append(input); return wrap; };
+      const number = (value: number, min: number, max: number) => {
+        const input = document.createElement("input"); input.type = "number"; input.min = String(min); input.max = String(max); input.step = "1"; input.required = true; input.value = String(value); return input;
       };
       const preset = document.createElement("select");
-      for (const [label, value] of [["1920×1080", "1920x1080"], ["1280×720", "1280x720"], ["854×480", "854x480"], ["640×480", "640x480"]]) {
-        const option = document.createElement("option"); option.textContent = label; option.value = value; preset.append(option);
-      }
-      const width = document.createElement("input"); width.type = "number"; width.min = "16"; width.max = "8192"; width.value = "1920";
-      const height = document.createElement("input"); height.type = "number"; height.min = "16"; height.max = "8192"; height.value = "1080";
-      const duration = document.createElement("input"); duration.type = "number"; duration.min = "1"; duration.max = "86400"; duration.step = ".001"; duration.value = "14400";
-      const frameRate = document.createElement("input"); frameRate.type = "number"; frameRate.min = "1"; frameRate.max = "240"; frameRate.step = ".001"; frameRate.value = "23.976";
-      const color = document.createElement("input"); color.type = "color"; color.value = "#000000";
-      preset.addEventListener("change", () => {
-        const [w, h] = preset.value.split("x").map(Number);
-        width.value = String(w); height.value = String(h);
-      });
-      grid.append(field("预设", preset), field("宽度", width), field("高度", height), field("时长（秒）", duration), field("帧率", frameRate), field("背景颜色", color));
-      body.append(grid);
+      for (const size of ["自定义", "640×480", "1280×720", "1920×1080", "3840×2160"]) preset.append(new Option(size, size === "自定义" ? "" : size.replace("×", "x")));
+      const width = number(last.width ?? 1280, 1, 8192), height = number(last.height ?? 720, 1, 8192);
+      preset.value = `${width.value}x${height.value}`;
+      preset.addEventListener("change", () => { if (preset.value) [width.value, height.value] = preset.value.split("x"); });
+      const frames = number(last.frames ?? 40000, 2, 36000000);
+      const fps = document.createElement("input"); fps.type = "text"; fps.inputMode = "decimal"; fps.value = last.fpsText ?? "24000/1001"; fps.required = true;
+      const color = document.createElement("input"); color.type = "color"; color.value = last.color ?? "#2fa3fe";
+      const checkerboard = document.createElement("input"); checkerboard.type = "checkbox"; checkerboard.checked = last.checkerboard ?? false;
+      const duration = el("output", "", "");
+      const error = el("div", "se-dummy-error"); error.setAttribute("role", "alert");
+      const updateDuration = () => {
+        const rate = parseDummyFrameRate(fps.value);
+        fps.setCustomValidity(rate === null ? "请输入有效帧率，例如 24 或 24000/1001。" : "");
+        duration.textContent = rate ? `时长：${formatTimestamp(Number(frames.value) / rate * 1000, ".")}` : "帧率无效";
+      };
+      fps.addEventListener("input", updateDuration); frames.addEventListener("input", updateDuration); updateDuration();
+      grid.append(field("预设", preset), field("背景颜色", color), field("宽度", width), field("高度", height), field("帧率", fps), field("时长（帧）", frames), field("棋盘格", checkerboard), duration);
+      body.append(grid, error);
       const foot = el("div", "ad-foot");
       const cancel = el("button", "ad-btn", "取消") as HTMLButtonElement; cancel.type = "button";
       const create = el("button", "ad-btn primary", "创建") as HTMLButtonElement; create.type = "submit";
-      foot.append(cancel, create);
-      modal.append(head, body, foot);
-      back.append(modal);
-      document.body.append(back);
-      const finish = (value: { width: number; height: number; durationSeconds: number; frameRate: number; color: string } | null): void => {
-        back.remove();
-        resolve(value);
-      };
+      foot.append(cancel, create); modal.append(head, body, foot); back.append(modal); document.body.append(back);
+      const finish = (options: DummyVideoOptions | null) => { back.remove(); resolve(options); };
       cancel.addEventListener("click", () => finish(null));
-      back.addEventListener("pointerdown", (event) => { if (event.target === back) finish(null); });
-      modal.addEventListener("submit", (event) => {
-        event.preventDefault();
-        finish({
-          width: Math.max(16, Number(width.value) || 1920),
-          height: Math.max(16, Number(height.value) || 1080),
-          durationSeconds: Math.max(1, Number(duration.value) || 14400),
-          frameRate: Math.max(1, Number(frameRate.value) || 23.976),
-          color: color.value || "#000000",
-        });
+      back.addEventListener("pointerdown", event => { if (event.target === back) finish(null); });
+      modal.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); finish(null); } });
+      modal.addEventListener("submit", event => {
+        event.preventDefault(); updateDuration();
+        const frameRate = parseDummyFrameRate(fps.value);
+        if (!modal.reportValidity() || frameRate === null) return;
+        if (Number(width.value) * Number(height.value) > 16777216) { error.textContent = "此预览画布最多支持 16777216 像素，请减小尺寸。"; return; }
+        const options = { width: Number(width.value), height: Number(height.value), frames: Number(frames.value), frameRate, color: color.value, checkerboard: checkerboard.checked };
+        localStorage.setItem("aegisub-web.dummy-video", JSON.stringify({ ...options, fpsText: fps.value }));
+        finish(options);
       });
-      width.focus();
+      fps.focus();
     });
   }
 
+  private openDummyVideo(options: DummyVideoOptions): void {
+    this.mediaLoadGeneration++;
+    this.frameIndexAbort?.abort(); this.frameIndexAbort = null;
+    this.videoFrameIndex = null;
+    this.dummyFrameCount = options.frames; this.frameRate = options.frameRate;
+    this.clearPlaybackRuntime();
+    if (this.posOverlay) this.exitPosition();
+    if (this.clipOverlay) this.exitClip();
+    if (this.drawOverlay) this.exitDraw();
+    this.mediaFile = null;
+    this.videoZoom = 1; this.videoPanX = 0; this.videoPanY = 0; this.videoAspectOverride = null;
+    this.rightEl.replaceChildren();
+    const host = el("div", "se-playerhost") as HTMLDivElement;
+    this.rightEl.append(host); this.appendVideoChrome();
+    this.player = createDummyVideoPlayer(host, options, this.prepareEmbeddedFontUrls(), message => this.toast(message));
+    const media = this.player.getMediaElement()!;
+    this.video = media;
+    this.configureVideoSurface(media, host);
+    this.audio.bindVideo(media);
+    media.addEventListener("timeupdate", this.onTimeUpdate);
+    media.addEventListener("pointermove", this.onVideoPointer);
+    media.addEventListener("seeked", () => { this.updateVideoChrome(); this.refreshPausedSubtitleFrame(); });
+    this.root.classList.add("se-has-media");
+    this.root.dataset.mediaKind = "dummy";
+    this.root.dataset.mediaName = `空白视频 ${options.width}×${options.height}`;
+    this.root.dataset.frameIndex = "dummy"; this.root.dataset.videoFrames = String(options.frames);
+    this.root.dataset.dummyStatus = "ready"; delete this.root.dataset.mediaLoading;
+    this.setMobilePane("video");
+    this.setPlaybackRate(this.getPlaybackRate());
+    this.pushSubtitles(true); this.updateVideoChrome(); this.updateFontWarning();
+  }
+
   private async openDummyMedia(kind: "video" | "blank" | "noise"): Promise<void> {
-    let width = 640;
-    let height = 360;
-    let durationSeconds = 9000;
-    let color = "#101318";
-    let frameRate = 23.976;
     if (kind === "video") {
-      const chosen = await this.chooseDummyVideo();
-      if (!chosen) return;
-      ({ width, height, durationSeconds, frameRate, color } = chosen);
+      const options = await this.chooseDummyVideo();
+      if (options) this.openDummyVideo(options);
+      return;
     }
-    try {
-      this.root.dataset.dummyStatus = "encoding";
-      this.setWaveStatus("Encoding dummy media…");
-      const file = await createDummyVideo({ width, height, durationSeconds, frameRate, color, label: kind === "video" ? undefined : `${kind} debug audio clock` });
-      this.root.dataset.dummyStatus = "loading";
-      await this.loadVideo(file, { dummyClock: { fps: frameRate, duration: durationSeconds } });
-      this.setMobilePane(kind === "video" ? "video" : "audio");
-      this.root.dataset.dummyStatus = "ready";
-      this.debugNoise = kind === "noise";
-      if (kind !== "video") {
-        const peaks = new Float32Array(durationSeconds * 100);
-        if (kind === "noise") for (let index = 0; index < peaks.length; index += 1) peaks[index] = .15 + Math.random() * .8;
-        this.wavePeaks = { peaks, peaksPerSec: 100 };
-        this.timeline?.setPeaks(peaks, 100);
-        this.root.dataset.displayMode = "audio-subs";
-      }
-    } catch (error) {
-      this.root.dataset.dummyStatus = `error:${error instanceof Error ? error.message : String(error)}`;
-      this.toast(error instanceof Error ? error.message : String(error));
-    } finally {
-      this.setWaveStatus("");
-    }
+    this.audioLoadGeneration++;
+    this.resetAudioAnalysis();
+    this.audio.openSynthetic(kind);
+    this.audio.bindVideo(this.video);
+    this.setMobilePane("audio");
+    this.timeline?.setPeakProvider((start, end) => this.audio.synthetic?.peak(start, end) ?? 0);
+    this.setPlaybackRate(this.getPlaybackRate());
+    this.setWaveStatus("");
   }
 
   private closeMedia(): void {
     this.mediaLoadGeneration += 1;
+    delete this.root.dataset.dummyStatus;
     this.frameIndexAbort?.abort();
     this.frameIndexAbort = null;
     this.videoFrameIndex = null;
     this.dummyFrameCount = 0;
     delete this.root.dataset.frameIndex;
     delete this.root.dataset.videoFrames;
-    this.stopDebugNoise();
-    this.debugNoise = false;
     this.clearPlaybackRuntime();
     this.mediaFile = null;
     this.lastVideoPointer = null;
@@ -4143,22 +4140,26 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   private async saveSelectedAudioClip(): Promise<void> {
     const cue = this.selectedCue();
-    if (!cue || !this.audio.analysisBlob) {
+    if (!cue || (!this.audio.analysisBlob && !this.audio.synthetic)) {
       this.toast("Load audio and select a subtitle line first.");
       return;
     }
     const generation = this.audioLoadGeneration;
     try {
       this.setWaveStatus("Decoding audio clip…");
-      const decoded = this.decodedMono16k ?? await decodeAudioToMono16k(this.audio.analysisBlob, {
-        signal: this.waveAbort?.signal,
-        durationHint: this.audio.duration || undefined,
-      });
+      let blob: Blob;
+      if (this.audio.synthetic) blob = await this.audio.synthetic.wavClip(cue.startMs / 1000, cue.endMs / 1000, ratio => this.setWaveStatus(`导出音频 ${Math.round(ratio * 100)}%`));
+      else {
+        const decoded = this.decodedMono16k ?? await decodeAudioToMono16k(this.audio.analysisBlob!, {
+          signal: this.waveAbort?.signal, durationHint: this.audio.duration || undefined,
+        });
+        if (generation !== this.audioLoadGeneration) return;
+        this.decodedMono16k = decoded;
+        const start = Math.max(0, Math.floor(cue.startMs * 16));
+        const end = Math.min(this.decodedMono16k.length, Math.ceil(cue.endMs * 16));
+        blob = pcm16Wav(this.decodedMono16k.subarray(start, end), 16000);
+      }
       if (generation !== this.audioLoadGeneration) return;
-      this.decodedMono16k = decoded;
-      const start = Math.max(0, Math.floor(cue.startMs * 16));
-      const end = Math.min(this.decodedMono16k.length, Math.ceil(cue.endMs * 16));
-      const blob = pcm16Wav(this.decodedMono16k.subarray(start, end), 16000);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -4173,38 +4174,35 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private async showAudioView(view: "waveform" | "spectrum"): Promise<void> {
+    const request = ++this.spectrumRequest;
+    this.spectrumCancel?.(); this.spectrumCancel = null;
     this.setMobilePane("audio");
     this.audioViewMode = view;
-    if (view === "waveform") {
-      this.timeline?.setAudioView("waveform");
-      return;
-    }
-    if (this.spectrumData) {
-      this.timeline?.setSpectrum(this.spectrumData);
-      return;
-    }
-    if (!this.audio.analysisBlob) {
-      this.toast("Load audio before opening the spectrum display.");
-      return;
-    }
+    if (view === "waveform") { this.timeline?.setAudioView("waveform"); this.setWaveStatus(""); return; }
+    if (this.spectrumData) { this.timeline?.setSpectrum(this.spectrumData); return; }
+    if (!this.audio.analysisBlob && !this.audio.synthetic) { this.toast("请先加载音频。"); return; }
     const generation = this.audioLoadGeneration;
+    const current = () => generation === this.audioLoadGeneration && request === this.spectrumRequest;
+    const progress = (ratio: number) => { if (current()) this.setWaveStatus(`频谱 ${Math.round(ratio * 100)}%`); };
     try {
-      this.setWaveStatus("Decoding audio for spectrum…");
-      const decoded = this.decodedMono16k ?? await decodeAudioToMono16k(this.audio.analysisBlob, { durationHint: this.audio.duration || undefined });
-      if (generation !== this.audioLoadGeneration || this.audioViewMode !== "spectrum") return;
-      this.decodedMono16k = decoded;
-      this.spectrumCancel?.();
-      const run = computeSpectrum(this.decodedMono16k, 16000, (ratio) => this.setWaveStatus(`Spectrum ${Math.round(ratio * 100)}%`));
+      this.setWaveStatus("正在计算频谱…");
+      let run: ReturnType<typeof computeSpectrum>;
+      if (this.audio.synthetic) run = computeDummySpectrum(this.audio.synthetic.kind, this.audio.duration, this.audio.synthetic.sampleRate, progress);
+      else {
+        const decoded = this.decodedMono16k ?? await decodeAudioToMono16k(this.audio.analysisBlob!, { durationHint: this.audio.duration || undefined });
+        if (!current()) return;
+        this.decodedMono16k = decoded;
+        run = computeSpectrum(decoded, 16000, progress);
+      }
       this.spectrumCancel = run.cancel;
       const data = await run.done;
-      if (generation !== this.audioLoadGeneration) return;
+      if (!current()) return;
       this.spectrumData = data;
-      this.spectrumCancel = null;
-      if (this.audioViewMode === "spectrum") this.timeline?.setSpectrum(this.spectrumData);
+      this.timeline?.setSpectrum(data);
     } catch (error) {
-      this.toast(error instanceof Error ? error.message : String(error));
+      if (current() && !(error instanceof DOMException && error.name === "AbortError")) this.toast(error instanceof Error ? error.message : String(error));
     } finally {
-      if (generation === this.audioLoadGeneration) this.setWaveStatus("");
+      if (current()) { this.spectrumCancel = null; this.setWaveStatus(""); }
     }
   }
 
@@ -4221,7 +4219,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (mode !== "subs") context.drawImage(video, 0, 0, canvas.width, canvas.height);
     if (mode !== "raw") {
       for (const overlay of this.rightEl.querySelectorAll<HTMLCanvasElement>(".se-playerhost canvas")) {
-        if (overlay === canvas || !overlay.width || !overlay.height) continue;
+        if (overlay === canvas || overlay === this.video || !overlay.width || !overlay.height) continue;
         context.drawImage(overlay, 0, 0, canvas.width, canvas.height);
       }
     }
@@ -4850,7 +4848,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.history.reset(this.snapshot());
     this.updateHistoryButtons();
     const nextFontSignature = this.currentEmbeddedFontSignature(doc);
-    if (this.mediaFile && this.video && nextFontSignature !== this.embeddedFontSignature) {
+    if ((this.mediaFile || this.player?.setSubtitleFonts) && this.video && nextFontSignature !== this.embeddedFontSignature) {
       this.reloadMediaPreservingState(false);
     } else {
       this.pushSubtitles(true);
@@ -4874,7 +4872,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (keepPrimary) this.setSelection(keepIds.length ? keepIds : [keepPrimary], keepPrimary);
     this.markDirty();
     this.updateFontWarning();
-    if (this.mediaFile && this.video && this.currentEmbeddedFontSignature() !== previousFontSignature) {
+    if ((this.mediaFile || this.player?.setSubtitleFonts) && this.video && this.currentEmbeddedFontSignature() !== previousFontSignature) {
       this.reloadMediaPreservingState(false);
     }
     if (message) this.toast(message);
@@ -5250,8 +5248,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
         return true;
       }
       case "video/details": {
-        if (!this.video || !this.mediaFile) this.toast("No video loaded.");
-        else openVideoDetails(this.mediaFile, this.video, this.frameRate);
+        if (!this.video) this.toast("No video loaded.");
+        else openVideoDetails(this.mediaFile ?? { name: this.root.dataset.mediaName ?? "空白视频", size: 0, type: "virtual/canvas" }, this.video, this.frameRate);
         return true;
       }
       case "video/subtitles_provider/cycle":
@@ -5487,9 +5485,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.audio.destroy();
     this.decodedMono16k = null;
     this.wavePeaks = null;
-    this.stopDebugNoise();
-    void this.debugAudioContext?.close();
-    this.debugAudioContext = null;
     this.timeline?.destroy();
     this.timeline = null;
     this.root.remove();

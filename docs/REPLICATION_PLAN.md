@@ -87,7 +87,7 @@ for arbitrary unavailable fonts or all font collections.
 1. Transport: verify the new frame index/seek path against decoded frame images and native
    VFR fixtures, not only media.currentTime; streaming audio analysis/export retaining original channels/sample rate; reliable
    unsupported-codec audio (including video with ALAC) on every target engine. Audio clip
-   export is still 16k mono. Dummy audio still shares the dummy-video generator: replace it.
+   export for file audio is still 16k mono; synthetic audio exports native-rate PCM16.
 2. Native timing: adaptive zoom/scroll, keyframe snapping, playback-follow options, linked
    gain/volume, audio cache policy, full pointer-cancel and repeated-commit edge cases.
 3. Visual typesetting: complete native perspective/origin/move/clip control-point behavior
@@ -95,7 +95,7 @@ for arbitrary unavailable fonts or all font collections.
 4. ASS preview/fonts: eliminate stale paused-frame renders; compare pixel output with
    desktop libass for Chinese glyphs, weight/name matching, fn overrides, drawings,
    karaoke, transforms, animated clipping and effects. Missing fonts cannot be called exact.
-5. Editing/dialogs: clipboard and text/history boundaries, all hotkey contexts, style and
+5. Editing/dialogs: project media links/restoration, clipboard and text/history boundaries, all hotkey contexts, style and
    translation assistants, timing processor, import/export settings and window behavior.
 6. Automation: native-compatible Lua API/module semantics and actual extension bridge for
    unavoidable native operations. A Fengari worker alone is not full Automation 4 parity.
@@ -105,5 +105,35 @@ for arbitrary unavailable fonts or all font collections.
 8. Publishing: only publish verified increments, keeping incomplete status explicit. Check
    CI and the actual GitHub Pages build after pushing; do not equate deployment with parity.
 
-Next: finish the current regression failures, then replace the frame clock and paused ASS
-renderer. Keep this list current; do not close the goal at a command-count milestone.
+## Encoder-free virtual providers (current increment)
+
+The previous turn made verified implementation and deployment progress through `c82e1eb`.
+This increment replaces the old encoded-file dummy implementation (removed `dummy-media.ts`)
+with an explicitly canvas-backed video and seekable transport. It preserves independently
+loaded audio and uses libass canvas mode for ASS. No video encoder or encoded media Blob is
+created. Duration uses frame count and decimal/fractional FPS, with saved settings and native
+8×8 checkerboard behavior. Allocation depends on background size, not frame count.
+
+Blank/noise audio are independent 150-minute, 44.1 kHz mono sources, matching native duration
+and format. Noise uses a seek-stable procedural generator in the native amplitude range;
+native random-engine bit identity is not promised. An AudioWorklet outputs that signal;
+the waveform, FFT and PCM16 export use the same sample function. Noise PCM is generated
+on demand rather than allocating the entire 150-minute clip. Waveform display is decimated;
+full-range FFT runs off-thread and is cancellable. File-audio analysis/export still needs
+the separate streaming/quality work listed above.
+
+Local tests explicitly disable VideoEncoder/AudioEncoder. Canvas preview/clock tests pass
+in Chromium and the local Windows WebKit runtime. Windows WebKit lacks Web Audio (its
+AudioContext is undefined), so real noise-output acceptance requires the configured macOS
+runner. Chromium tests measure output through AnalyserNode, not just an advancing clock.
+This increment is not complete until its full regression/target CI and deployed path pass.
+
+Local evidence: 384 unit cases pass (11 existing skips); 60 applicable Playwright cases in
+Chromium/Firefox/Android profiles pass (24 explicit skips). The old Cypress dummy test was
+updated from encoded-media/seconds assumptions to frame-count/Canvas behavior; its 19-case
+spec passes, with the other 49 Cypress cases passing in the preceding full run. FFT equality
+is tested against raw procedural PCM, including the silent source's zero spectrum. Native
+random-engine bit identity and exhaustive colored checkerboard rounding are not claimed.
+
+Next: finish virtual-provider regression and publication, then address file-audio streaming,
+quality and remaining native visual-edit workflows. Do not close the goal at a command-count milestone.
