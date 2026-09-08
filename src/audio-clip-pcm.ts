@@ -80,9 +80,18 @@ export function downmixPcm16(view: DataView, channels: number, frames: number, r
   return mono;
 }
 
-/** Incremental native mono provider conversion. Only one source sample of lookahead
- * and a 64 KiB output block stay in JS; completed output is stored as immutable Blobs. */
-export class PcmClipWriter {
+/** Native provider sample-rate conversion, without speech-recognition resampling. */
+export function nativePcmRate(sourceRate: number): { rate: number; factor: number } {
+  if (!Number.isSafeInteger(sourceRate) || sourceRate <= 0) throw new Error("音频采样率无效。");
+  let factor = 1; while (sourceRate * factor < 32000) factor *= 2;
+  return { rate: sourceRate * factor, factor };
+}
+
+export type PcmSampleRange = { startSample: number; endSample: number };
+
+/** Shared streaming provider for both export and waveform pixels. The callback
+ * consumes the reused byte buffer synchronously; it must copy retained bytes. */
+export class NativePcmRange {
   readonly factor: number;
   readonly rate: number;
   readonly start: number;
@@ -91,21 +100,24 @@ export class PcmClipWriter {
   readonly readEnd: number;
   private cursor: number;
   private previous: number | null = null;
-  private parts: BlobPart[];
   private bytes = new Uint8Array(65536);
   private view = new DataView(this.bytes.buffer);
   private used = 0;
   private written = 0;
   private pair: Int16Array;
+  private finished = false;
 
-  constructor(sourceRate: number, totalFrames: number, range: AudioClipRange) {
-    clipSampleRange(range, sourceRate, totalFrames);
-    let factor = 1;
-    while (sourceRate * factor < 32000) factor *= 2;
-    this.factor = factor; this.rate = sourceRate * factor;
-    const { start, end } = clipSampleRange(range, this.rate, totalFrames * factor);
+  constructor(sourceRate: number, totalFrames: number, range: AudioClipRange | PcmSampleRange, private consume: (bytes: Uint8Array<ArrayBuffer>, startSample: number) => void) {
+    clipSampleRange({ startMs: 0, endMs: 0 }, sourceRate, totalFrames);
+    const { factor, rate } = nativePcmRate(sourceRate);
+    this.factor = factor; this.rate = rate;
+    let start: number, end: number;
+    if ("startSample" in range) {
+      if (!Number.isSafeInteger(range.startSample) || !Number.isSafeInteger(range.endSample)) throw new Error("音频采样范围无效。");
+      start = Math.max(0, Math.min(totalFrames * factor, range.startSample));
+      end = Math.max(start, Math.min(totalFrames * factor, range.endSample));
+    } else ({ start, end } = clipSampleRange(range, this.rate, totalFrames * factor));
     this.start = start; this.end = end;
-    this.parts = [monoWavHeader(this.rate, end - start)];
     this.readStart = Math.floor(start / factor);
     this.readEnd = end === start ? this.readStart : Math.min(totalFrames, Math.floor((end - 1) / factor) + 1 + (factor > 1 ? 1 : 0));
     this.cursor = this.readStart; this.pair = new Int16Array(factor + 1);
@@ -114,6 +126,7 @@ export class PcmClipWriter {
   get progress(): number { return this.end === this.start ? 1 : this.written / (this.end - this.start); }
 
   append(position: number, samples: Int16Array): void {
+    if (this.finished) throw new Error("音频采样流已结束。");
     // Packet timestamps may overlap, or include leading/trailing codec padding.
     // Missing timeline samples are silence; already consumed samples are never repeated.
     const gapEnd = Math.min(position, this.readEnd);
@@ -146,16 +159,31 @@ export class PcmClipWriter {
 
   private flush(): void {
     if (!this.used) return;
-    this.parts.push(new Blob([this.bytes.subarray(0, this.used)]));
+    this.consume(this.bytes.subarray(0, this.used), this.start + this.written - this.used / 2);
     this.used = 0;
   }
 
-  finish(): Blob {
+  finish(): void {
+    if (this.finished) return;
     while (this.cursor < this.readEnd) this.feed(0);
     if (this.factor > 1 && this.previous !== null) this.writePair(this.cursor - 1, this.previous, 0);
     this.flush();
     if (this.written !== this.end - this.start) throw new Error("音频片段采样数量不符，未保存不完整文件。");
-    const blob = new Blob(this.parts, { type: "audio/wav" }); this.parts = [];
-    return blob;
+    this.finished = true;
+  }
+}
+
+export class PcmClipWriter extends NativePcmRange {
+  private parts: BlobPart[];
+  private result: Blob | null = null;
+  constructor(sourceRate: number, totalFrames: number, range: AudioClipRange) {
+    const parts: BlobPart[] = [];
+    super(sourceRate, totalFrames, range, bytes => parts.push(new Blob([bytes])));
+    parts.push(monoWavHeader(this.rate, this.end - this.start)); this.parts = parts;
+  }
+  override finish(): Blob {
+    if (this.result) return this.result;
+    super.finish(); this.result = new Blob(this.parts, { type: "audio/wav" }); this.parts.length = 0;
+    return this.result;
   }
 }

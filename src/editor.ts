@@ -57,7 +57,8 @@ import { decodeAudioToMono16k, extractWaveformPeaks, extractMkvSubtitles, type M
 import { createEmbeddedPlayer } from "./embedded-player";
 import { createNativeVideoPlayer } from "./native-video-player";
 import { indexedFrameSeconds } from "./presentation-time";
-import { extractStreamedWaveform } from "./waveform-extractor";
+import { extractStreamedWaveform, extractWaveformViewport } from "./waveform-extractor";
+import type { WaveformViewport } from "./waveform-data";
 import { exportAudioClip } from "./audio-clip";
 import { selectedAudioClipRange } from "./audio-clip-pcm";
 import { extractMp4Subtitles } from "./mp4subs";
@@ -390,6 +391,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private audioAdjustments: AudioAdjustments | null = null;
   private audioMarkerCache: { keys: number[]; frames: number[]; fps: number; result: number[] } | null = null;
   private waveAbort: AbortController | null = null;
+  private waveformViewportAbort: AbortController | null = null;
+  private waveformViewportTimer = 0;
+  private pendingWaveformViewport: WaveformViewport | null = null;
   private waveStatusEl: HTMLDivElement | null = null;
   private detailTextarea: HTMLTextAreaElement | null = null;
   private detailTab: "text" | "drawing" = "text";
@@ -861,6 +865,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
         ...(audioFlag("show-video-position") && this.video ? [this.videoBoundaryTime("start"), this.videoBoundaryTime("end")] : []),
       ],
       onZoom: level => this.audioAdjustments?.setZoom(level),
+      onWaveformViewport: viewport => this.requestWaveformViewport(viewport),
       onVideoSeek: seconds => this.stopAndSeek(seconds * 1000),
       followPlayback: () => localStorage.getItem("aegisub-web.audio-lock-cursor") === "true",
       getSelectedId: () => this.selectedId,
@@ -3779,7 +3784,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     try {
       const result = await extractStreamedWaveform(blob, ac.signal, ratio => this.setWaveStatus(`${t("extractingWave")} ${Math.round(ratio * 100)}%`));
       if (ac.signal.aborted || generation !== this.audioLoadGeneration) return;
-      this.wavePeaks = result; this.timeline?.setPeaks(result.peaks, result.peaksPerSec);
+      this.wavePeaks = result; this.timeline?.setPeaks(result.peaks, result.peaksPerSec, result);
       this.root.dataset.waveformDecoder = "worker-ready"; this.setWaveStatus("");
     } catch {
       if (ac.signal.aborted || generation !== this.audioLoadGeneration) return;
@@ -3797,6 +3802,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private resetAudioAnalysis(): void {
+    delete this.root.dataset.waveformViewport;
+    this.waveformViewportAbort?.abort(); this.waveformViewportAbort = null;
+    window.clearTimeout(this.waveformViewportTimer); this.waveformViewportTimer = 0; this.pendingWaveformViewport = null;
     this.audioExportAbort?.abort();
     this.spectrumRequest++;
     this.waveAbort?.abort();
@@ -3994,6 +4002,27 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   private setWaveStatus(text: string): void {
     if (this.waveStatusEl) this.waveStatusEl.textContent = text;
+  }
+
+  private requestWaveformViewport(viewport: WaveformViewport): void {
+    this.pendingWaveformViewport = viewport;
+    if (this.waveformViewportTimer) return;
+    this.waveformViewportTimer = window.setTimeout(async () => {
+      this.waveformViewportTimer = 0;
+      const file = this.audio.analysisBlob, synthetic = this.audio.synthetic?.kind, view = this.pendingWaveformViewport;
+      if ((!file && !synthetic) || !view) return;
+      this.waveformViewportAbort?.abort();
+      const ac = new AbortController(); this.waveformViewportAbort = ac;
+      const generation = this.audioLoadGeneration;
+      this.root.dataset.waveformViewport = "loading";
+      try {
+        const pixels = await extractWaveformViewport(file, view, ac.signal, synthetic);
+        if (ac.signal.aborted || generation !== this.audioLoadGeneration) return;
+        this.root.dataset.waveformViewport = "ready"; this.timeline?.setWaveformPixels(pixels);
+      } catch {
+        if (!ac.signal.aborted && generation === this.audioLoadGeneration) this.root.dataset.waveformViewport = "unavailable";
+      } finally { if (this.waveformViewportAbort === ac) this.waveformViewportAbort = null; }
+    }, 80);
   }
 
   // Feed the current (serialized) document to the preview so it renders the live edits.
@@ -5643,6 +5672,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     document.removeEventListener("keydown", this.onDrawKey, true);
     this.waveAbort?.abort();
     this.clearPlaybackRuntime();
+    this.waveformViewportAbort?.abort(); window.clearTimeout(this.waveformViewportTimer);
     this.audioExportAbort?.abort();
     this.mediaFile = null;
     this.audioLoadGeneration++;

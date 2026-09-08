@@ -1,5 +1,5 @@
 import { ALL_FORMATS, AudioSampleSink, BlobSource, EncodedPacketSink, Input, type AudioSample } from "mediabunny";
-import { downmixPcm16, floatToPcm16, pcm16Reader, PcmClipWriter, type AudioClipRange } from "./audio-clip-pcm";
+import { downmixPcm16, floatToPcm16, pcm16Reader, PcmClipWriter, type AudioClipRange, type NativePcmRange } from "./audio-clip-pcm";
 import { readMatroskaAudioTiming } from "./matroska-audio-timing";
 import { decodeVorbisClip } from "./audio-clip-vorbis";
 
@@ -30,6 +30,11 @@ function decodedMono(sample: AudioSample): Int16Array {
 /** Demux just the selected interval plus decoder preroll/lookahead. No video decode,
  * AudioContext resampling, full-file arrayBuffer, or persistent media cache. */
 export async function streamAudioClip(file: Blob, range: AudioClipRange, progress: (ratio: number) => void = () => undefined): Promise<Blob> {
+  const writer = await processAudioPcm(file, (rate, count) => new PcmClipWriter(rate, count, range), progress);
+  const blob = writer.finish(); progress(1); return blob;
+}
+
+export async function processAudioPcm<T extends NativePcmRange>(file: Blob, create: (sourceRate: number, totalFrames: number) => T, progress: (ratio: number) => void = () => undefined): Promise<T> {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   try {
     const track = await input.getPrimaryAudioTrack();
@@ -37,8 +42,8 @@ export async function streamAudioClip(file: Blob, range: AudioClipRange, progres
     const [sourceRate, channels, duration, codec] = await Promise.all([track.getSampleRate(), track.getNumberOfChannels(), track.computeDuration(), track.getCodec()]);
     const timing = await readMatroskaAudioTiming(file, track.id);
     const delaySamples = Math.round(timing.delay * sourceRate);
-    const writer = new PcmClipWriter(sourceRate, Math.max(0, Math.round(duration * sourceRate) - delaySamples), range);
-    if (writer.start === writer.end) return writer.finish();
+    const writer = create(sourceRate, Math.max(0, Math.round(duration * sourceRate) - delaySamples));
+    if (writer.start === writer.end) return writer;
     const startTime = (writer.readStart + delaySamples) / sourceRate, endTime = (writer.readEnd + delaySamples) / sourceRate;
     let lastProgress = 0;
     let primingSamples = 0;
@@ -88,6 +93,6 @@ export async function streamAudioClip(file: Blob, range: AudioClipRange, progres
         try { consume(sample.timestamp, sample); } finally { sample.close(); }
       }
     }
-    const blob = writer.finish(); progress(1); return blob;
+    return writer;
   } finally { input.dispose(); }
 }

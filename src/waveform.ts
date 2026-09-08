@@ -8,6 +8,7 @@ import type { Cue } from "./cue";
 import { AudioTimingGesture } from "./audio-timing-gesture";
 import { audioFlag, audioNumber, audioTimingCues, audioZoomFactor } from "./audio-options";
 import type { SpectrumData } from "./spectrum";
+import { waveformViewKey, type WaveformValues, type WaveformPixels, type WaveformViewport } from "./waveform-data";
 
 export interface TimelineCallbacks {
   getCues: () => Cue[];
@@ -17,6 +18,7 @@ export interface TimelineCallbacks {
   getVideoPositionMs?: () => number | null;
   getKeyframesMs?: () => readonly number[];
   onZoom?: (level: number) => void;
+  onWaveformViewport?: (viewport: WaveformViewport) => void;
   onVideoSeek?: (seconds: number) => void;
   followPlayback?: () => boolean;
   getSelectedId: () => string | null;
@@ -64,6 +66,10 @@ export class Timeline {
   private peaks: Float32Array | null = null;
   private peakProvider: ((start: number, end: number) => number) | null = null;
   private peaksPerSec = PEAKS_PER_SEC;
+  private waveform: WaveformValues | null = null;
+  private waveformPixels: WaveformPixels | null = null;
+  private waveformPixelCache: WaveformPixels[] = [];
+  private waveformRequest = "";
   private spectrum: SpectrumData | null = null;
   private audioView: "waveform" | "spectrum" = "waveform";
   private pal!: Palette;
@@ -125,21 +131,31 @@ export class Timeline {
   }
 
   // Absolute-peak buckets (PEAKS_PER_SEC per second) mixed down from the audio buffer.
-  setPeaks(peaks: Float32Array, peaksPerSec = PEAKS_PER_SEC): void {
+  setPeaks(peaks: Float32Array, peaksPerSec = PEAKS_PER_SEC, waveform?: WaveformValues): void {
     this.peakProvider = null;
     this.peaks = peaks;
     this.peaksPerSec = peaksPerSec;
+    this.waveform = waveform ?? null; this.waveformPixels = null; this.waveformPixelCache = []; this.waveformRequest = "";
+    this.render();
+  }
+
+  setWaveformPixels(pixels: WaveformPixels): void {
+    const key = waveformViewKey(pixels.viewport);
+    this.waveformPixelCache = [...this.waveformPixelCache.filter(item => waveformViewKey(item.viewport) !== key), pixels].slice(-2);
     this.render();
   }
 
   clearPeaks(): void {
     this.peakProvider = null;
     this.peaks = null;
+    this.waveform = null; this.waveformPixels = null; this.waveformPixelCache = []; this.waveformRequest = "";
+    this.canvas.dataset.waveformResolution = "none";
     this.render();
   }
 
   setPeakProvider(provider: (start: number, end: number) => number): void {
     this.peaks = null; this.peakProvider = provider;
+    this.waveform = null; this.waveformPixels = null; this.waveformPixelCache = []; this.waveformRequest = "";
     this.render();
   }
 
@@ -323,28 +339,58 @@ export class Timeline {
   private drawWaveform(): void {
     if (!this.peaks && !this.peakProvider) return;
     const ctx = this.ctx;
-    const midY = RULER_H + (this.height - RULER_H) / 2;
-    const halfH = (this.height - RULER_H) / 2 - 4;
+    const halfH = Math.floor((this.height - RULER_H) / 2);
+    const midY = RULER_H + halfH;
+    const startPixel = Math.floor(this.scrollSec * this.pxPerSec), width = Math.ceil(this.width);
+    this.waveformPixels = this.waveformPixelCache.find(item => {
+      const left = Math.round(item.viewport.startSeconds * this.pxPerSec);
+      return item.viewport.pixelsPerSecond === this.pxPerSec && left <= startPixel && left + item.viewport.width >= startPixel + width;
+    }) ?? null;
+    const detail = this.waveformPixels;
+    const detailStart = detail ? Math.round(detail.viewport.startSeconds * this.pxPerSec) : 0;
+    const precise = !!detail && detail.viewport.pixelsPerSecond === this.pxPerSec && detailStart <= startPixel && detailStart + detail.viewport.width >= startPixel + width;
+    if ((this.waveform || this.peakProvider) && !precise && this.cb.onWaveformViewport) {
+      const tile = Math.floor(startPixel / 128) * 128;
+      const view = { startSeconds: tile / this.pxPerSec, startPixel: tile, pixelsPerSecond: this.pxPerSec, width: Math.ceil((startPixel - tile + width + 128) / 128) * 128 };
+      const key = waveformViewKey(view);
+      if (key !== this.waveformRequest) { this.waveformRequest = key; this.cb.onWaveformViewport(view); }
+    }
+    this.canvas.dataset.waveformResolution = precise ? "samples" : this.waveform ? "overview" : "legacy";
+    const averages = audioNumber("waveform-style", 0, 0, 1) === 1;
+    const avgRanges: number[][] = [];
     ctx.strokeStyle = this.pal.wave;
     ctx.globalAlpha = 0.5;
     ctx.beginPath();
-    for (let x = 0; x < this.width; x++) {
+    for (let x = 0; x < width; x++) {
       const t0 = this.secOf(x);
       const t1 = this.secOf(x + 1);
-      let peak = 0;
-      if (this.peakProvider) peak = this.peakProvider(t0, t1);
+      let low = 0, high = 0, avgLow = 0, avgHigh = 0;
+      if (precise) {
+        const i = startPixel + x - detailStart;
+        low = detail.minima[i]; high = detail.maxima[i]; avgLow = detail.negativeMeans[i]; avgHigh = detail.positiveMeans[i];
+      } else if (this.peakProvider) { high = this.peakProvider(t0, t1); low = -high; }
       else if (this.peaks) {
         const b0 = Math.max(0, Math.floor(t0 * this.peaksPerSec));
-        const b1 = Math.min(this.peaks.length - 1, Math.ceil(t1 * this.peaksPerSec));
-        for (let b = b0; b <= b1; b++) if (this.peaks[b] > peak) peak = this.peaks[b];
+        const b1 = Math.min(this.peaks.length - 1, Math.ceil(t1 * this.peaksPerSec) - 1);
+        for (let b = b0; b <= b1; b++) {
+          if (this.waveform) {
+            low = Math.min(low, this.waveform.minima[b]); high = Math.max(high, this.waveform.maxima[b]);
+            avgLow += this.waveform.negativeMeans[b]; avgHigh += this.waveform.positiveMeans[b];
+          } else { high = Math.max(high, this.peaks[b]); low = -high; }
+        }
+        avgLow /= Math.max(1, b1 - b0 + 1); avgHigh /= Math.max(1, b1 - b0 + 1);
         if (b1 < 0 || b0 >= this.peaks.length) continue;
       }
-      const h = Math.min(1, peak * this.amplitude) * halfH;
-      ctx.moveTo(x + 0.5, midY - h);
-      ctx.lineTo(x + 0.5, midY + h);
+      const y = (value: number) => midY - Math.trunc(Math.max(-1, Math.min(1, value * this.amplitude)) * halfH);
+      ctx.moveTo(x + 0.5, y(high)); ctx.lineTo(x + 0.5, y(low));
+      if (averages) avgRanges.push([x + .5, y(avgHigh), y(avgLow)]);
     }
     ctx.stroke();
     ctx.globalAlpha = 1;
+    if (averages) {
+      ctx.beginPath(); for (const [x, top, bottom] of avgRanges) { ctx.moveTo(x, top); ctx.lineTo(x, bottom); } ctx.stroke();
+    }
+    ctx.beginPath(); ctx.moveTo(0, midY + .5); ctx.lineTo(this.width, midY + .5); ctx.stroke();
   }
 
   private drawSpectrum(): void {

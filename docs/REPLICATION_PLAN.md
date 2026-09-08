@@ -409,3 +409,37 @@ checks also pass in Chromium and the local macOS/iPad/iPhone WebKit profiles, in
 without native AudioDecoder. The official npm audit reports zero known vulnerabilities;
 all five new package integrity hashes match the official npm registry. Real macOS CI
 must still validate the published replacement before the Safari regression is closed.
+
+## Sample-based waveform rendering (current increment)
+
+The previous audio/FLAC/font increment passed all nine CI jobs
+([34216962066](https://github.com/samgum/aegisub-web/actions/runs/34216962066)) and
+was verified on the public site. The terminal-padding investigation then found that
+FFMS provider lengths can differ from both container duration and plain FFmpeg output.
+The diagnostic version limits and uncompleted exact-GUI check are recorded in
+`test-corpus/NATIVE_AUDIO_PROVIDER_AUDIT.md`; no universal EOF trimming is claimed.
+
+Waveform and clip export now share the normalized PCM reader. PCM channels are averaged
+before waveform statistics, negative/positive peaks are kept separately, and every sample
+in a native pixel strip is inspected. The new "maximum + average" option uses signed
+arithmetic means (not RMS), with maximum-only remaining the native default.
+
+A coarse overview appears first. Visible waveform pixels are then decoded off-thread
+using native sample spans and 32-pixel rounding boundaries, with a bounded two-tile cache.
+Zoom/pan requests are coalesced and replaceable; source close/replacement and editor teardown
+cancel pending work. Gain changes, cursor-only paints and cached panning reuse the samples.
+No whole-track PCM array or WAV Blob is constructed for waveform rendering. Synthetic
+blank/noise providers use their actual deterministic PCM for the detailed viewport too.
+
+The C++ arithmetic oracle and browser signed-ink/impulse tests are stronger than checking
+that a waveform canvas merely exists. They still do not establish native colour-scheme,
+compressed surround mixing, codec endpoint, or physical-device equivalence.
+
+Local verification: 473 unit cases pass (11 existing skips), 68 Cypress cases pass,
+205 Chromium/Firefox/Android cases pass (35 explicit skips), and all nine dedicated
+WebKit waveform cases pass when run with their own preview server. GCC and MSVC agree
+on the 36 native arithmetic cases. An isolated 3840x2160 playback check recorded 153
+frames / zero dropped frames, zero whole-file reads, and a 618x347 subtitle canvas;
+the native-only baseline recorded 158 / zero. An earlier concurrent run missed the
+unchanged 5% dropped-frame gate and shut down a shared server under the WebKit run;
+those results are not treated as valid isolated performance/platform acceptance.

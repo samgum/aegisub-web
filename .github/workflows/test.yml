@@ -76,6 +76,7 @@ jobs:
       # And what it muxes: ffprobe on the containers, and the cues pulled back out of the
       # one subtitle track ffmpeg can read.
       - run: npm run check:mux
+      - run: node scripts/check-native-waveform.mjs
 
   # The editor itself, in a real browser. Everything above runs in node against strings, and
   # editor.ts is both the largest file here and the one nothing else can reach: it only ever

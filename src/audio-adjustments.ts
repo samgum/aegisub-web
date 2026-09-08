@@ -50,7 +50,10 @@ export function openAudioTimingOptions(onChange: () => void): void {
   }
   const mode = el("select"); for (const [value, title] of [[0, "不显示"], [1, "仅上一行"], [2, "上一行和下一行"], [3, "所有非选中行"]] as const) mode.append(new Option(title, String(value)));
   mode.value = String(audioNumber("inactive-lines", 3, 0, 3)); const label = el("label", "非选中行显示"); label.append(mode); options.append(label); numbers.push(["inactive-lines", mode]);
-  ui.body.append(options); ui.foot.append(button("确定", () => {
+  const waveform = el("select"); waveform.append(new Option("最大值", "0"), new Option("最大值＋平均值", "1"));
+  waveform.value = String(audioNumber("waveform-style", 0, 0, 1)); const waveformLabel = el("label", "波形样式"); waveformLabel.append(waveform); numbers.push(["waveform-style", waveform]);
+  const display = styleGroup("波形显示"); display.append(waveformLabel);
+  ui.body.append(options, display); ui.foot.append(button("确定", () => {
     if (numbers.some(([, input]) => !input.reportValidity())) return;
     flags.forEach(([key, input]) => localStorage.setItem(`aegisub-web.audio-${key}`, String(input.checked)));
     numbers.forEach(([key, input]) => localStorage.setItem(`aegisub-web.audio-${key}`, input.value)); onChange(); ui.close();
