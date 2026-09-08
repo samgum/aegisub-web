@@ -25,14 +25,16 @@
 // Usage: node scripts/gen-corpus.mjs [--no-validate]
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { normalizeText, readCsv, readJson, readWithFfmpeg, readWithPysubs2, xmlEscape } from "./oracles.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const OUT = join(ROOT, "test-corpus");
+const outputIndex = process.argv.indexOf("--output");
+if (outputIndex >= 0 && (!process.argv[outputIndex + 1] || process.argv[outputIndex + 1].startsWith("--"))) throw new Error("--output requires a directory");
+const OUT = outputIndex >= 0 ? resolve(process.argv[outputIndex + 1]) : join(ROOT, "test-corpus");
 const PY = process.platform === "win32"
   ? join(ROOT, ".cache/py/Scripts/python.exe")
   : join(ROOT, ".cache/py/bin/python");
@@ -372,11 +374,12 @@ const FFMPEG_MUXER = { ass: "ass", vtt: "webvtt", ttml: "ttml", lrc: "lrc" };
 
 function main() {
   const validate = !process.argv.includes("--no-validate");
-  rmSync(OUT, { recursive: true, force: true });
+  // Only overwrite this generator's declared fixtures. Media, native oracles and
+  // hand-authored regressions share test-corpus and must survive regeneration.
   mkdirSync(OUT, { recursive: true });
 
-  const tmp = join(tmpdir(), `subedit-corpus-${process.pid}`);
-  mkdirSync(tmp, { recursive: true });
+  const tempRoot = resolve(tmpdir());
+  const tmp = mkdtempSync(join(tempRoot, "aegisub-corpus-"));
 
   const SETS = { base: BASE, fine: FINE, overlap: OVERLAP };
   const bootstrap = {};
@@ -421,6 +424,7 @@ function main() {
     join(OUT, "tiny.mp4"),
   ]);
 
+  if (dirname(resolve(tmp)) !== tempRoot || !basename(tmp).startsWith("aegisub-corpus-")) throw new Error("Invalid generator-owned temporary directory");
   rmSync(tmp, { recursive: true, force: true });
 
   writeFileSync(join(OUT, "truth.json"), JSON.stringify({ base: BASE, fine: FINE, overlap: OVERLAP, fps: FPS }, null, 2) + "\n");
@@ -435,7 +439,7 @@ function main() {
   }
 
   const verified = manifest.filter((m) => m.oracle).length;
-  console.log(`${manifest.length} fixtures written to test-corpus/ (${verified} confirmed by an independent reader).`);
+  console.log(`${manifest.length} fixtures written to ${OUT} (${validate ? `${verified} confirmed by an independent reader` : "independent verification skipped (--no-validate)"}).`);
 }
 
 /** Rewrite a fixture with the line endings / BOM its variant calls for. */
