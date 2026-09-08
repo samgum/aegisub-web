@@ -1,7 +1,7 @@
 import { VirtualPlaybackClock, type PlaybackClock } from "./playback-clock";
 import { convertDoc, parseSubtitles, serializeSubtitles } from "./formats";
-import type SubtitlesOctopus from "@jellyfin/libass-wasm";
-import { assWorkerUrl } from "./ass-renderer-assets";
+import { CanvasAssRenderer } from "./canvas-ass-renderer";
+import { dummyFrameSeconds } from "./presentation-time";
 
 export interface DummyVideoOptions {
   width: number; height: number; frames: number; frameRate: number; color: string; checkerboard: boolean;
@@ -62,38 +62,22 @@ export function createDummyVideoPlayer(host: HTMLElement, options: DummyVideoOpt
   const subtitleParent = document.createElement("div"); subtitleParent.className = "libassjs-canvas-parent";
   Object.assign(subtitleParent.style, { position: "absolute", inset: "0", pointerEvents: "none" });
   subtitleParent.append(subtitles); stage.append(canvas, subtitleParent); wrapper.append(stage); host.append(wrapper);
-  let renderer: SubtitlesOctopus | null = null, generation = 0, disposed = false, content = "", fonts = initialFonts;
+  const renderer = new CanvasAssRenderer(subtitles, initialFonts, message => onError(`字幕预览：${message}`));
+  let disposed = false;
   const render = () => {
-    if (renderer) {
-      const frame = Math.min(options.frames - 1, Math.floor(clock.currentTime * options.frameRate + 1e-7));
-      renderer.lastRenderTime = -1; renderer.setCurrentTime(frame / options.frameRate);
-    }
-  };
-  const startRenderer = async () => {
-    const serial = ++generation;
-    renderer?.dispose(); renderer = null;
-    try {
-      const { default: Octopus } = await import("@jellyfin/libass-wasm");
-      if (disposed || serial !== generation) return;
-      renderer = new Octopus({ canvas: subtitles, subContent: content, fonts,
-        workerUrl: assWorkerUrl(),
-        fallbackFont: new URL("octopus/default.woff2", document.baseURI).toString(), targetFps: Math.min(60, options.frameRate),
-        onReady: render, onError: error => { if (!disposed && serial === generation) onError(`字幕预览：${String(error)}`); },
-      });
-      render();
-    } catch (error) { if (!disposed && serial === generation) onError(String(error)); }
+    if (!disposed) renderer.renderAt(dummyFrameSeconds(clock.currentTime, options.frameRate, options.frames), clock.paused);
   };
   for (const event of ["timeupdate", "seeked"]) clock.addEventListener(event, render);
   return {
     getMediaElement: () => canvas,
+    getPresentedTime: () => Math.max(0, Math.min(options.frames - 1, Math.floor(clock.currentTime * options.frameRate + 1e-7))) / options.frameRate,
     getBytes: () => undefined,
     setSubtitleText(text: string, filename: string) {
       if (disposed) return;
-      content = /\.(ass|ssa)$/i.test(filename) ? text : serializeSubtitles(convertDoc(parseSubtitles(text, filename), "ass"));
-      if (renderer) { renderer.setTrack(content); render(); } else void startRenderer();
+      render(); renderer.setText(/\.(ass|ssa)$/i.test(filename) ? text : serializeSubtitles(convertDoc(parseSubtitles(text, filename), "ass")));
     },
-    setSubtitleFonts(next: string[]) { fonts = next; if (content) void startRenderer(); },
+    setSubtitleFonts(next: string[]) { renderer.setFonts(next); },
     focus: () => canvas.focus(),
-    destroy() { disposed = true; generation++; clock.dispose(); renderer?.dispose(); renderer = null; canvas.width = 0; canvas.height = 0; subtitles.width = 0; subtitles.height = 0; wrapper.remove(); },
+    destroy() { disposed = true; clock.dispose(); void renderer.dispose(); canvas.width = 0; canvas.height = 0; wrapper.remove(); },
   };
 }

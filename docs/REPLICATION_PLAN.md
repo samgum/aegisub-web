@@ -88,6 +88,8 @@ for arbitrary unavailable fonts or all font collections.
    VFR fixtures, not only media.currentTime; streaming audio analysis/export retaining original channels/sample rate; reliable
    unsupported-codec audio (including video with ALAC) on every target engine. Audio clip
    export for file audio is still 16k mono; synthetic audio exports native-rate PCM16.
+   Custom project timecode remapping across preview/playback/seeking and frame capture,
+   offscreen preview capture, and original-resolution subtitle-frame export remain open.
 2. Native timing: exhaustive pointer-cancel/auto-commit edge cases, negative-range and native
    ten-hour clamp behavior, segmented time-input/frame modes, audio cache policy and
    sample-accurate endpoints. Live auto-commit and basic native amendment boundaries now
@@ -284,3 +286,37 @@ selection boundaries, live actor controls, whole-selection undo, ASS/SRT precisi
 the actual transition from painted to blank ASS at a fixed paused video time. An additional
 12-case Chromium run covers dummy video and the 4K benchmark with the revised worker URL.
 These are bounded workflow checks, not proof of the complete replication objective.
+
+## Presented-frame subtitle clock (2026-09-08)
+
+Source: `VideoController::RequestFrame` passes the selected frame's time to the subtitle
+provider; FFMS2 builds integer-ms timecodes from packet PTS, while dummy video uses the
+rounded CFR clock. The web native-video path mixed callback mediaTime with the advancing
+HTML currentTime on subtitle edits, pause and seeked. Regressions first reproduced a
+1.000-second frame being rendered at 1.014 seconds and a 0.958-second frame at 0.966.
+
+Rendering now holds the last submitted frame's timestamp when editing or pausing. A seek
+does not advance ASS before its new image is presented. Real frame callbacks bypass the
+additional 60Hz throttle, which could otherwise lose a paused seek or uneven 60Hz update.
+Firefox additionally reports the seek target as callback mediaTime in some paused seeks;
+the demuxed presentation-order index resolves that timestamp to the actual decoded frame.
+The clock is resynchronized when asynchronous indexing completes. Engines without frame
+callbacks retain a documented media-clock fallback, not a guarantee of compositor identity.
+
+Frame-step commands and video-boundary timing use the displayed frame, with an explicit
+pending target to accumulate rapid steps before asynchronous decoding finishes. Decoder
+seeks use raw packet times independently of project timecode overrides. Dummy video now
+uses the common renderer's guarded initialization/retirement and native rounded CFR times.
+
+Proof includes real callback/worker timestamp tracing for playback, edits, pause and seek;
+pixel geometry of an animated ASS rectangle at its expected paused-frame coordinate; and
+FFmpeg PNG oracles for a between-frame VFR seek. At a 0.150-second seek, Firefox reported
+0.150 but displayed the independently verified 0.120-second frame; ASS now receives 0.120.
+The correct PNG's structural error was about 0.0011, versus 0.045 for the wrong frame.
+The test drawing appeared at x=150 with width=12 as derived from its ASS geometry.
+
+Local full suite: 404 unit cases pass (11 existing skips), 68 Cypress cases pass, and
+133 browser cases pass in Chromium/Firefox/Android profiles (35 explicit skips). Tests
+also cover stepping from a paused playback frame and accumulating three immediate steps.
+Native desktop pixel identity for every font/effect, legacy decoder paths, custom timecode
+remapping and physical-device behavior still require the remaining full-objective audit.

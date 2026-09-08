@@ -56,6 +56,7 @@ import type { VisualTransformMode } from "./visual-transform";
 import { decodeAudioToMono16k, extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
 import { createEmbeddedPlayer } from "./embedded-player";
 import { createNativeVideoPlayer } from "./native-video-player";
+import { indexedFrameSeconds } from "./presentation-time";
 import { extractStreamedWaveform } from "./waveform-extractor";
 import { extractMp4Subtitles } from "./mp4subs";
 import { runTranslate, type TranslateRun } from "./localml/translate";
@@ -110,6 +111,7 @@ type PreviewMedia = HTMLMediaElement | DummyVideoElement;
 type PreviewPlayer = Omit<MediaPlayerHandle, "getMediaElement"> & {
   getMediaElement(): PreviewMedia | undefined;
   setSubtitleFonts?(fonts: string[]): void;
+  getPresentedTime?(): number;
 };
 
 // A vertex of an ASS drawing, in PlayRes coordinates. `type` is how it connects from the
@@ -320,6 +322,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private frameRate = 23.976;
   private videoFrameIndex: VideoFrameIndex | null = null;
   private frameIndexAbort: AbortController | null = null;
+  private pendingVideoFrame: { frame: number; timeMs: number } | null = null;
   private dummyFrameCount = 0;
   private tagDisplayMode: "show" | "hide" | "simplify" = "simplify";
   private playRangeStop: (() => void) | null = null;
@@ -849,7 +852,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       getDuration: () => this.audio.duration,
       getCurrentTime: () => this.audio.currentTime,
       getKeyframesMs: () => this.audioKeyframeTimes(),
-      getVideoPositionMs: () => this.video ? this.video.currentTime * 1000 : null,
+      getVideoPositionMs: () => this.video ? VideoFrameIndex.timeAtFrame(this.frameTimes, this.currentVideoFrame(), this.frameRate) : null,
       getSnapTargetsMs: () => [
         ...(audioFlag("show-keyframes") ? this.audioKeyframeTimes() : []),
         ...(audioFlag("show-video-position") && this.video ? [this.videoBoundaryTime("start"), this.videoBoundaryTime("end")] : []),
@@ -3699,6 +3702,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private clearPlaybackRuntime(): void {
+    this.pendingVideoFrame = null;
     this.visualTransform?.close(); this.visualTransform = null;
     this.audio?.bindVideo(null);
     this.playRangeStop?.();
@@ -3860,7 +3864,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const fontUrls = this.prepareEmbeddedFontUrls();
     const native = localStorage.getItem("aegisub-web.video-decoder") !== "compatibility" && !/\.(mkv|avi|wmv|flv|ts|m2ts)$/i.test(file.name);
     this.root.dataset.videoDecoder = native ? "native" : "compatibility";
-    this.player = native ? createNativeVideoPlayer(host, file, fontUrls, message => this.toast(message)) : createEmbeddedPlayer(
+    this.player = native ? createNativeVideoPlayer(host, file, fontUrls, message => this.toast(message), seconds => indexedFrameSeconds(seconds, this.videoFrameIndex?.startsMs ?? [])) : createEmbeddedPlayer(
       host,
       { blob: file, mime: file.type || "video/mp4", filename: file.name },
       { embedded: true, libass: { fonts: fontUrls }, onError: (message) => this.toast(message) },
@@ -4025,6 +4029,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   };
 
   private seekTo(ms: number, play = false): void {
+    this.pendingVideoFrame = null;
     if (this.video) {
       this.video.currentTime = ms / 1000;
       if (play) { this.audio.prepareOutput(); void this.video.play().catch(() => {}); }
@@ -4715,6 +4720,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       this.root.dataset.frameIndex = "ready";
       this.root.dataset.videoFrames = String(index.startsMs.length);
       this.updateVideoChrome();
+      if (this.mediaFile === file) this.pushSubtitles(true);
     } catch (error) {
       if (controller.signal.aborted) return;
       this.root.dataset.frameIndex = "unavailable";
@@ -4735,7 +4741,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private currentFrameDuration(): number {
-    const frame = this.frameAtMs((this.video?.currentTime ?? 0) * 1000);
+    const frame = this.currentVideoFrame();
     return VideoFrameIndex.timeAtFrame(this.frameTimes, frame + 1, this.frameRate) - VideoFrameIndex.timeAtFrame(this.frameTimes, frame, this.frameRate);
   }
 
@@ -4744,22 +4750,40 @@ class SubtitleEditor implements SubtitleEditorHandle {
     return VideoFrameIndex.frameAtTime(this.frameTimes, timeMs);
   }
 
+  private currentVideoFrame(): number {
+    if (!this.video) return 0;
+    const raw = this.videoFrameIndex?.startsMs ?? [];
+    const at = (seconds: number) => raw.length ? VideoFrameIndex.frameAtTime(raw, seconds * 1000)
+      : this.dummyFrameCount ? Math.max(0, Math.min(this.dummyFrameCount - 1, Math.floor(seconds * this.frameRate + 1e-7))) : this.frameAtMs(seconds * 1000);
+    if (!this.video.paused) this.pendingVideoFrame = null;
+    if (this.video.seeking) return at(this.video.currentTime);
+    const presented = at(this.player?.getPresentedTime?.() ?? this.video.currentTime);
+    if (this.pendingVideoFrame) {
+      const pending = this.pendingVideoFrame;
+      if (presented !== pending.frame && Math.abs(this.video.currentTime * 1000 - pending.timeMs) < 2) return pending.frame;
+      this.pendingVideoFrame = null;
+    }
+    return presented;
+  }
+
   private seekVideoFrame(delta: number): void {
     if (!this.video) return;
-    const count = this.frameTimes.length || this.dummyFrameCount;
+    const rawFrames = this.videoFrameIndex?.startsMs ?? (this.dummyFrameCount ? [] : this.frameTimes);
+    const count = rawFrames.length || this.dummyFrameCount;
     if (!count) { this.toast("视频帧索引尚不可用。"); return; }
-    const frame = Math.max(0, Math.min(count - 1, this.frameAtMs(this.video.currentTime * 1000) + delta));
+    const frame = Math.max(0, Math.min(count - 1, this.currentVideoFrame() + delta));
     this.video.pause();
     this.audio.stop();
     this.playRangeStop?.();
     this.playRangeStop = null;
     // Place the HTML decoder inside this frame's interval, avoiding floating-point
     // conversion rounding its exact start back onto the previous frame.
-    this.seekTo(VideoFrameIndex.timeAtFrame(this.frameTimes, frame, this.frameRate) + .001);
+    const timeMs = VideoFrameIndex.timeAtFrame(rawFrames, frame, this.frameRate) + .001;
+    this.seekTo(timeMs); this.pendingVideoFrame = { frame, timeMs };
   }
 
   private videoBoundaryTime(boundary: "start" | "end"): number {
-    return Math.max(0, VideoFrameIndex.timeAtFrame(this.frameTimes, this.frameAtMs((this.video?.currentTime ?? 0) * 1000), this.frameRate, boundary));
+    return Math.max(0, VideoFrameIndex.timeAtFrame(this.frameTimes, this.currentVideoFrame(), this.frameRate, boundary));
   }
 
   private currentPlayheadMs(): number {

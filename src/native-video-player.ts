@@ -1,9 +1,10 @@
 import { CanvasAssRenderer } from "./canvas-ass-renderer";
 import { convertDoc, parseSubtitles, serializeSubtitles } from "./formats";
+import { nativeFrameSeconds } from "./presentation-time";
 
 /** Native browser decoding/AV sync, with an independent display-sized subtitle layer.
  * No full-file read, second video decoder or background embedded-track scan. */
-export function createNativeVideoPlayer(host: HTMLElement, file: File, fonts: string[], onError: (message: string) => void) {
+export function createNativeVideoPlayer(host: HTMLElement, file: File, fonts: string[], onError: (message: string) => void, timeAtPresentation: (seconds: number) => number = nativeFrameSeconds) {
   const wrapper = document.createElement("div"); wrapper.className = "ot-media se-native-player";
   Object.assign(wrapper.style, { width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" });
   const stage = document.createElement("div"); stage.className = "ot-media-stage"; stage.style.position = "relative";
@@ -20,6 +21,9 @@ export function createNativeVideoPlayer(host: HTMLElement, file: File, fonts: st
   parent.append(canvas); stage.append(video, parent); wrapper.append(stage); host.append(wrapper);
   const renderer = new CanvasAssRenderer(canvas, fonts, onError);
   let disposed = false, callback = 0, raf = 0;
+  const presentedFrames = typeof video.requestVideoFrameCallback === "function";
+  let presentationTime = 0, reportedTime = 0;
+  video.dataset.frameClock = presentedFrames ? "presented" : "media-fallback";
   const resize = () => {
     const rect = stage.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -28,23 +32,28 @@ export function createNativeVideoPlayer(host: HTMLElement, file: File, fonts: st
   };
   const frame: VideoFrameRequestCallback = (_now, metadata) => {
     if (disposed) return;
-    renderer.renderAt(metadata.mediaTime);
+    reportedTime = metadata.mediaTime; presentationTime = timeAtPresentation(reportedTime);
+    // The callback is already paced by actual presentation. Applying a second 60Hz
+    // throttle would drop valid frames on slightly uneven 60Hz callbacks or paused seeks.
+    renderer.renderAt(presentationTime, true);
     callback = video.requestVideoFrameCallback(frame);
   };
-  const fallback = () => { if (!disposed && !video.paused) { renderer.renderAt(video.currentTime); raf = requestAnimationFrame(fallback); } };
-  const play = () => { if (!video.requestVideoFrameCallback) { cancelAnimationFrame(raf); raf = requestAnimationFrame(fallback); } };
-  const seeked = () => renderer.renderAt(video.currentTime, true);
-  video.addEventListener("play", play); video.addEventListener("seeked", seeked); video.addEventListener("pause", seeked);
+  const fallback = () => { if (!disposed && !video.paused) { presentationTime = timeAtPresentation(video.currentTime); renderer.renderAt(presentationTime); raf = requestAnimationFrame(fallback); } };
+  const play = () => { if (!presentedFrames) { cancelAnimationFrame(raf); raf = requestAnimationFrame(fallback); } };
+  const seeked = () => { if (!presentedFrames) { presentationTime = timeAtPresentation(video.currentTime); renderer.renderAt(presentationTime, true); } };
+  const pause = () => { cancelAnimationFrame(raf); presentationTime = timeAtPresentation(presentedFrames ? reportedTime : video.currentTime); renderer.renderAt(presentationTime, true); };
+  video.addEventListener("play", play); video.addEventListener("seeked", seeked); video.addEventListener("pause", pause);
   video.addEventListener("loadedmetadata", resize);
   video.addEventListener("error", () => { if (!disposed) onError(`浏览器无法解码此视频（${video.error?.code ?? "未知"}）。可在视频菜单中选择兼容解码。`); });
-  if (video.requestVideoFrameCallback) callback = video.requestVideoFrameCallback(frame);
+  if (presentedFrames) callback = video.requestVideoFrameCallback(frame);
   const observer = new ResizeObserver(resize); observer.observe(stage);
   return {
     getMediaElement: () => video,
+    getPresentedTime: () => presentedFrames ? reportedTime : video.currentTime,
     getBytes: () => undefined,
     setSubtitleText(text: string, filename: string) {
+      if (presentedFrames || !video.seeking) { presentationTime = timeAtPresentation(presentedFrames ? reportedTime : video.currentTime); renderer.renderAt(presentationTime); }
       renderer.setText(/\.(ass|ssa)$/i.test(filename) ? text : serializeSubtitles(convertDoc(parseSubtitles(text, filename), "ass")));
-      renderer.renderAt(video.currentTime, video.paused);
     },
     setSubtitleFonts: (next: string[]) => renderer.setFonts(next),
     focus: () => video.focus(),
