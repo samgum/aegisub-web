@@ -45,18 +45,19 @@ import { openStyleEditor, openScriptProperties } from "./styles-editor";
 import { openKaraoke } from "./karaoke";
 import { setLocale, t, alignmentOptions } from "./i18n";
 import { Timeline } from "./waveform";
-import { createMediaPlayer, decodeAudioToMono16k, extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
+import { AudioWorkspace, isAudioFile } from "./audio-workspace";
+import { TimingDraft } from "./timing-draft";
+import { decodeAudioToMono16k, extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
+import { createEmbeddedPlayer } from "./embedded-player";
 import { extractMp4Subtitles } from "./mp4subs";
 import { runTranslate, type TranslateRun } from "./localml/translate";
 import { buildTranslationPlan, applyUniqueTranslation, rebuildCueText, type TranslationPlan } from "./translate-plan";
 import {
-  addLead,
   clearCueText,
   findStyleOverlaps,
   insertCueRelative,
   joinSelectedCues,
   moveSelectedRows,
-  nudgeTimingUnit,
   recombineSelectedCues,
   setContinuousTiming,
   shiftSelectionToTime,
@@ -90,7 +91,6 @@ import { getAIAnalysisSettings, openAIAnalysis, openAIAnalysisSettings } from ".
 import { openSpellchecker } from "./spellchecker";
 import { openResolutionMismatchDialog, openVideoDetails } from "./video-details";
 import { parseEmbeddedFonts } from "./fonts";
-import { decodeAuroraAudioToWav, fileHasAlac } from "./alac";
 
 export interface SubtitleInput {
   text: string;
@@ -325,7 +325,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private mediaLoadGeneration = 0;
   private activeHotkeyContext: AegisubHotkeyContext = "grid";
   private activeVideoTool = "video/tool/cross";
-  private analysisMediaBlob: Blob | null = null;
+  private audio!: AudioWorkspace;
+  private audioLoadGeneration = 0;
+  private timingDraft = new TimingDraft();
   private embeddedFontUrls: string[] = [];
   private embeddedFontSignature = "";
   private fontWarningEl: HTMLDivElement | null = null;
@@ -689,6 +691,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   // Re-point all views at the active track's document (format UI, list head, list, detail).
   private refreshForActiveDoc(): void {
+    this.timingDraft.clear();
     const isAss = this.doc.format === "ass";
     this.stylesBtn.style.display = isAss ? "" : "none";
     this.scriptBtn.style.display = isAss ? "" : "none";
@@ -759,6 +762,23 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const strip = el("div", "se-timeline-wrap");
     this.waveStatusEl = el("div", "se-wave-status") as HTMLDivElement;
     strip.appendChild(this.waveStatusEl);
+    const audioHost = el("div", "se-audio-player");
+    audioHost.hidden = true;
+    strip.append(audioHost);
+    this.audio = new AudioWorkspace(audioHost, {
+      changed: () => {
+        this.root.dataset.audioName = this.audio?.file?.name ?? "";
+        this.root.dataset.audioPlaying = String(this.audio?.playing ?? false);
+        if (audioHost.dataset.fallback) this.root.dataset.audioFallback = audioHost.dataset.fallback;
+        else delete this.root.dataset.audioFallback;
+        if (this.video) this.video.muted = !!this.audio?.element;
+        if (this.audio?.playing) this.timeline?.startPlayheadLoop();
+        else this.timeline?.stopPlayheadLoop();
+        this.timeline?.render();
+      },
+      error: (message) => { this.setWaveStatus(message); this.toast(`音频：${message}`); },
+      progress: (message) => this.setWaveStatus(message),
+    });
     const audioControls = el("div", "se-audio-controls");
     const audioButton = (icon: string, title: string, command: string): void => {
       const control = this.iconButton(nativeIcon(icon), title, () => this.runAegisubCommand(command));
@@ -777,15 +797,28 @@ class SubtitleEditor implements SubtitleEditorHandle {
     audioButton("button_audio_commit", "提交时间", "audio/commit");
     audioButton("button_audio_goto", "跳到选择", "audio/go_to");
     audioButton("kara_mode", "卡拉 OK", "audio/karaoke");
+    for (const [key, label, defaultOn] of [
+      ["audio-autocommit", "自动提交", false], ["audio-autonext", "提交后下一行", true],
+    ] as const) {
+      const labelEl = el("label", "se-audio-option", label);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.audioOption = key;
+      checkbox.checked = localStorage.getItem(`aegisub-web.${key}`) === null ? defaultOn : localStorage.getItem(`aegisub-web.${key}`) === "true";
+      checkbox.addEventListener("change", () => localStorage.setItem(`aegisub-web.${key}`, String(checkbox.checked)));
+      labelEl.prepend(checkbox);
+      audioControls.append(labelEl);
+    }
     strip.appendChild(audioControls);
     body.appendChild(strip);
     this.root.appendChild(body);
     this.timeline = new Timeline({
-      getCues: () => this.doc.cues,
-      getDuration: () => this.video?.duration ?? 0,
-      getCurrentTime: () => this.video?.currentTime ?? 0,
+      getCues: () => this.doc.cues.map(cue => this.timingDraft.read(cue)),
+      getDuration: () => this.audio.duration,
+      getCurrentTime: () => this.audio.currentTime,
       getSelectedId: () => this.selectedId,
-      onSeek: (sec) => this.stopAndSeek(sec * 1000),
+      getSelectedIds: () => [...this.selectedIds],
+      onSeek: (sec) => { this.audio.stop(); this.audio.seek(sec); },
       onSelectCue: (id) => this.select(id),
       onRetime: (id, startMs, endMs, commit) => this.retimeCue(id, startMs, endMs, commit),
     });
@@ -1027,17 +1060,68 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.fitVideoSurface();
   }
 
-  // Drag-retime from the timeline: update the cue live, commit (push + onChange) on release.
+  // Marker movement is a draft until the explicit audio commit (or optional auto-commit).
   private retimeCue(id: string, startMs: number, endMs: number, commit: boolean): void {
     const cue = this.doc.cues.find((c) => c.id === id);
     if (!cue) return;
-    cue.startMs = startMs;
-    cue.endMs = endMs;
-    this.refreshRow(id);
-    if (commit) {
-      if (id === this.selectedId) this.renderDetail();
-      this.markDirty();
+    this.timingDraft.set(cue, startMs, endMs);
+    this.renderTimingDraft();
+    if (commit && localStorage.getItem("aegisub-web.audio-autocommit") === "true") this.commitAudioTiming(false);
+  }
+
+  private audioSelection(): Cue | undefined {
+    const cue = this.selectedCue();
+    return cue && this.timingDraft.read(cue);
+  }
+
+  private renderTimingDraft(): void {
+    this.root.dataset.timingPending = String(this.timingDraft.pending);
+    const cue = this.audioSelection();
+    if (cue) {
+      const fields = this.detailEl.querySelectorAll<HTMLInputElement>(".se-times:first-child > .se-field > input");
+      const sep = this.doc.format === "srt" ? "," : ".";
+      const values = [formatTimestamp(cue.startMs, sep), formatTimestamp(cue.endMs, sep), ((cue.endMs - cue.startMs) / 1000).toFixed(3)];
+      fields.forEach((field, index) => { if (document.activeElement !== field && values[index] !== undefined) field.value = values[index]; });
     }
+    this.timeline?.render();
+  }
+
+  private commitAudioTiming(next: boolean, resetNext = false): void {
+    const range = this.audioSelection();
+    if (!range) return;
+    if (this.timingDraft.pending) {
+      // Finish a text edit before opening the separate manual timing undo transaction.
+      window.clearTimeout(this.histTimer);
+      this.histTimer = 0;
+      this.history.commit(this.snapshot());
+      this.doc.cues = this.timingDraft.commit(this.doc.cues);
+      for (const cue of this.doc.cues) this.refreshRow(cue.id);
+      this.markDirty();
+      window.clearTimeout(this.histTimer);
+      this.histTimer = 0;
+      this.history.commit(this.snapshot());
+    }
+    if (next) {
+      const index = this.doc.cues.findIndex(cue => cue.id === range.id);
+      let following = this.doc.cues[index + 1];
+      if (!following) {
+        following = blankCue(0, 0);
+        following.assKind = range.assKind;
+        following.assFields = range.assFields ? { ...range.assFields } : undefined;
+        this.applyCueList([...this.doc.cues, following], [following.id]);
+      } else this.select(following.id);
+      if (resetNext || following.endMs === 0) this.timingDraft.set(following, range.endMs, range.endMs + 3000);
+    }
+    this.renderDetail();
+    this.renderTimingDraft();
+  }
+
+  private adjustAudioTiming(startDelta: number, endDelta: number): void {
+    const cue = this.audioSelection();
+    if (!cue) return;
+    const start = Math.max(0, Math.min(cue.endMs, cue.startMs + startDelta));
+    const end = Math.max(start, cue.endMs + endDelta);
+    this.retimeCue(cue.id, start, end, true);
   }
 
   // --- cue list (virtualized) ----------------------------------------------
@@ -1315,6 +1399,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private setSelection(ids: string[], primary: string): void {
     const primaryChanged = primary !== this.selectedId;
     if (primaryChanged) {
+      this.timingDraft.clear();
+      this.root.dataset.timingPending = "false";
       // Deferred: setSelection runs mid-render, and a host may repaint in response.
       queueMicrotask(() => this.opts.onSelectionChanged?.(this.selectedId));
     }
@@ -1336,7 +1422,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     // Aegisub treats choosing a line as choosing its timing range. Stop any old range/video
     // playback and put the playhead on the new line immediately; otherwise audio from the
     // previous line continues while the edit box shows a different one.
-    if (primaryChanged && c && this.video) this.stopAndSeek(c.startMs);
+    if (primaryChanged && c) this.stopAndSeek(c.startMs);
   }
 
   // Cmd/Ctrl-click: toggle a cue in/out of the selection.
@@ -2373,7 +2459,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const wrap = el("label", "se-field", label);
     const input = document.createElement("input");
     input.value = value;
-    const commit = () => onCommit(input.value.trim());
+    let edited = false;
+    input.addEventListener("input", () => { edited = true; });
+    const commit = () => { if (edited) { edited = false; onCommit(input.value.trim()); } };
     input.addEventListener("change", commit);
     input.addEventListener("blur", commit);
     wrap.appendChild(input);
@@ -2627,6 +2715,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private updateCue(id: string, patch: Partial<Cue>, fromText = false): void {
     const cue = this.doc.cues.find((c) => c.id === id);
     if (!cue) return;
+    if (patch.startMs !== undefined || patch.endMs !== undefined) this.timingDraft.discard(id);
     const normalized = this.doc.format === "ass" && typeof patch.text === "string"
       ? { ...patch, text: patch.text.replace(/\r\n?|\n/g, "\\N") }
       : patch;
@@ -2655,9 +2744,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
       .then(({ openTranscribeDialog }) => {
         openTranscribeDialog({
           mediaFile: () => {
-            if (!this.mediaFile) return null;
-            if (!this.analysisMediaBlob || this.analysisMediaBlob === this.mediaFile) return this.mediaFile;
-            return new File([this.analysisMediaBlob], `${this.mediaFile.name}.wav`, { type: "audio/wav" });
+            const { file, analysisBlob } = this.audio;
+            if (!file) return null;
+            if (!analysisBlob || analysisBlob === file) return file;
+            return new File([analysisBlob], `${file.name}.wav`, { type: "audio/wav" });
           },
           hasCues: () => this.doc.cues.length > 0,
           onResult: (cues, mode) => this.insertTranscribedCues(cues, mode),
@@ -3504,6 +3594,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private clearPlaybackRuntime(): void {
+    this.audio?.bindVideo(null);
     this.playRangeStop?.();
     this.playRangeStop = null;
     this.videoResizeObserver?.disconnect();
@@ -3524,7 +3615,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.videoZoomLabel = null;
     this.fontWarningEl?.remove();
     this.fontWarningEl = null;
-    this.timeline?.stopPlayheadLoop();
     this.releaseEmbeddedFontUrls();
   }
 
@@ -3555,20 +3645,66 @@ class SubtitleEditor implements SubtitleEditorHandle {
   // Dolby/DTS audio decode and libass ASS rendering. embedded=true so the player's global
   // shortcuts and CC menu stay out of the editor's way; subedit drives subtitles via
   // setSubtitleText and reads currentTime from the underlying media element.
-  private async loadVideo(
-    file: File,
-    options: { restoreTime?: number; restorePaused?: boolean; scanEmbedded?: boolean; preserveView?: boolean } = {},
-  ): Promise<void> {
-    const generation = ++this.mediaLoadGeneration;
-    const audioOnly = file.type.startsWith("audio/") || /\.(?:aac|aif|aiff|alac|caf|flac|m4a|mp3|oga|ogg|opus|wav)$/i.test(file.name);
-    this.setMobilePane(audioOnly ? "audio" : "video");
-    this.stopDebugNoise();
-    this.debugNoise = false;
+  private async loadAudio(file: File, fromVideo = false): Promise<void> {
+    const generation = ++this.audioLoadGeneration;
+    if (!fromVideo) this.setMobilePane("audio");
+    this.resetAudioAnalysis();
+    this.setWaveStatus("正在加载音频…");
+    const ready = await this.audio.load(file, fromVideo);
+    if (generation !== this.audioLoadGeneration || !ready) return;
+    this.audio.bindVideo(this.video);
+    this.setPlaybackRate(this.getPlaybackRate());
+    this.timeline?.fitAll();
+    this.timeline?.render();
+    const blob = this.audio.analysisBlob;
+    if (!blob) return;
+    const memoryGb = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
+    if (blob.size > (memoryGb <= 4 ? 192 : 512) * 1024 * 1024) {
+      this.setWaveStatus("音频已加载；大文件波形解码尚不支持分段读取。");
+      return;
+    }
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (generation !== this.audioLoadGeneration) return;
+    await this.extractWaveform(bytes);
+  }
+
+  private resetAudioAnalysis(): void {
+    this.waveAbort?.abort();
+    this.waveAbort = null;
     this.decodedMono16k = null;
     this.spectrumCancel?.();
     this.spectrumCancel = null;
     this.spectrumData = null;
-    this.waveAbort?.abort();
+    this.wavePeaks = null;
+    this.timeline?.clearPeaks();
+    this.timeline?.clearSpectrum();
+  }
+
+  private closeAudio(): void {
+    this.audioLoadGeneration++;
+    this.resetAudioAnalysis();
+    this.audio.close();
+    this.setWaveStatus("");
+  }
+
+  private pickAudio(): void {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "audio/*,video/*,.alac,.caf,.aiff,.flac,.opus,.mkv,.wav";
+    input.addEventListener("change", () => { const file = input.files?.[0]; if (file) void this.loadAudio(file); });
+    input.click();
+  }
+
+  private async loadVideo(
+    file: File,
+    options: { restoreTime?: number; restorePaused?: boolean; scanEmbedded?: boolean; preserveView?: boolean } = {},
+  ): Promise<void> {
+    if (isAudioFile(file)) { await this.loadAudio(file); return; }
+    const generation = ++this.mediaLoadGeneration;
+    const replaceAudio = !options.preserveView && (!this.audio.file || this.audio.fromVideo);
+    this.setMobilePane("video");
+    this.stopDebugNoise();
+    this.debugNoise = false;
     this.clearPlaybackRuntime();
     if (this.posOverlay) this.exitPosition();
     if (this.clipOverlay) this.exitClip();
@@ -3577,8 +3713,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.root.classList.remove("se-has-media");
     this.root.dataset.mediaLoading = "true";
     this.root.dataset.mediaName = file.name;
-    this.root.dataset.mediaKind = audioOnly ? "audio" : "video";
-    delete this.root.dataset.audioFallback;
+    this.root.dataset.mediaKind = "video";
     if (!options.preserveView) {
       this.videoZoom = 1;
       this.videoPanX = 0;
@@ -3591,61 +3726,22 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.rightEl.appendChild(host);
     this.appendVideoChrome();
     this.mediaFile = file;
-    this.analysisMediaBlob = file;
     // Playback always receives the disk-backed File and can stream multi-GB media. Embedded-track
     // and waveform extraction currently need a byte view, so keep that optional on memory-limited
     // phones/tablets rather than forcing a huge allocation which can kill the whole page.
     this.mediaContainer = /\.(mkv|webm)$/i.test(file.name) || /matroska|webm/i.test(file.type) ? "mkv" : "mp4";
-    let playbackBlob: Blob = file;
-    const extension = file.name.toLowerCase().match(/\.([^.]+)$/)?.[1] ?? "";
-    const audioMimes: Record<string, string> = {
-      wav: "audio/wav", flac: "audio/flac", opus: "audio/ogg", ogg: "audio/ogg", oga: "audio/ogg",
-      mp3: "audio/mpeg", aac: "audio/aac", m4a: "audio/mp4", alac: "audio/mp4",
-      caf: "audio/x-caf", aif: "audio/aiff", aiff: "audio/aiff",
-    };
-    // OS MIME databases disagree on .ogg (some report video/ogg). The file extension is
-    // authoritative after audioOnly detection so mediaplay always creates an <audio> element.
-    let playbackMime = audioOnly
-      ? (audioMimes[extension] ?? (file.type.startsWith("audio/") ? file.type : "audio/mp4"))
-      : (file.type || "video/mp4");
-    let decodedWav: Blob | null = null;
-    try {
-      const auroraContainer = /\.(?:aif|aiff|caf)$/i.test(file.name);
-      const mayContainAlac = /\.(?:alac|caf|m4a|mp4|mov)$/i.test(file.name) || /(?:mp4|caf|quicktime)/i.test(file.type);
-      const alac = audioOnly && mayContainAlac && await fileHasAlac(file);
-      if (audioOnly && (alac || auroraContainer)) {
-        if (generation !== this.mediaLoadGeneration) return;
-        const fallback = alac ? "alac" : "aurora";
-        const label = alac ? "ALAC" : /\.caf$/i.test(file.name) ? "CAF" : "AIFF";
-        this.root.dataset.audioFallback = `${fallback}-loading`;
-        loading.textContent = `正在解码 ${label} 音频…`;
-        this.setWaveStatus(`正在解码 ${label} 音频…`);
-        decodedWav = await decodeAuroraAudioToWav(file, (ratio) => {
-          if (generation !== this.mediaLoadGeneration) return;
-          const percent = Math.round(ratio * 100);
-          loading.textContent = `正在解码 ${label} 音频… ${percent}%`;
-          this.setWaveStatus(`正在解码 ${label} 音频… ${percent}%`);
-        });
-        if (generation !== this.mediaLoadGeneration) return;
-        this.analysisMediaBlob = decodedWav;
-        playbackBlob = decodedWav;
-        playbackMime = "audio/wav";
-        this.root.dataset.audioFallback = `${fallback}-ready`;
-      }
-    } catch (error) {
-      this.root.dataset.audioFallback = "audio-decode-error";
-      this.toast(error instanceof Error ? `音频解码失败：${error.message}` : "音频解码失败");
-    }
-    if (generation !== this.mediaLoadGeneration) return;
     host.textContent = "";
     const fontUrls = this.prepareEmbeddedFontUrls();
-    this.player = createMediaPlayer(
+    this.player = createEmbeddedPlayer(
       host,
-      { blob: playbackBlob, mime: playbackMime, filename: decodedWav ? `${file.name}.wav` : file.name },
+      { blob: file, mime: file.type || "video/mp4", filename: file.name },
       { embedded: true, libass: { fonts: fontUrls }, onError: (message) => this.toast(message) },
     );
     const v = this.player.getMediaElement() ?? null;
     this.video = v;
+    this.audio.bindVideo(v);
+    if (v) v.muted = !!this.audio.element;
+    if (replaceAudio) void this.loadAudio(file, true);
     this.root.classList.add("se-has-media"); // player is now mounted and command-ready
     delete this.root.dataset.mediaLoading;
     if (v) {
@@ -3668,13 +3764,12 @@ class SubtitleEditor implements SubtitleEditorHandle {
         if (options.restorePaused === false) void v.play().catch(() => undefined);
       };
       v.addEventListener("loadedmetadata", metadataReady);
-      if (v.readyState >= 1) metadataReady();
-      v.addEventListener("play", () => this.timeline?.startPlayheadLoop());
-      v.addEventListener("pause", () => {
-        this.timeline?.stopPlayheadLoop();
-        this.timeline?.render();
+      v.addEventListener("seeked", () => {
+        if (generation !== this.mediaLoadGeneration) return;
+        this.updateVideoChrome();
+        this.refreshPausedSubtitleFrame();
       });
-      v.addEventListener("seeked", () => this.timeline?.render());
+      if (v.readyState >= 1) metadataReady();
       v.addEventListener("durationchange", () => this.updateVideoChrome());
       const savedRate = Number(localStorage.getItem("aegisub-web.playback-rate"));
       this.setPlaybackRate(Number.isFinite(savedRate) && savedRate > 0 ? savedRate : 1);
@@ -3685,8 +3780,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const memoryGb = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
     const analysisLimit = (memoryGb <= 4 ? 192 : 512) * 1024 * 1024;
     if (file.size > analysisLimit) {
-      this.toast("大文件采用流式播放；已跳过完整波形和内嵌轨扫描。 ");
-      this.setWaveStatus("");
+      this.toast("大文件采用流式播放；已跳过内嵌字幕轨扫描。");
       return;
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -3694,12 +3788,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.mediaContainer = bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3 ? "mkv" : "mp4";
     if (options.scanEmbedded !== false) this.loadEmbeddedTracks(bytes);
     this.pushSubtitles(true);
-    const analysisBytes = this.analysisMediaBlob && this.analysisMediaBlob !== file
-      ? new Uint8Array(await this.analysisMediaBlob.arrayBuffer())
-      : bytes;
-    if (generation !== this.mediaLoadGeneration) return;
-    void this.extractWaveform(analysisBytes);
-    this.setWaveStatus("");
+
   }
 
   // Read subtitle tracks embedded in the media container and load each as an editable track:
@@ -3750,7 +3839,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       const result = await extractWaveformPeaks(bytes, {
         base: new URL("libav/", document.baseURI).toString(),
         signal: ac.signal,
-        durationHint: this.video?.duration || undefined,
+        durationHint: this.audio.duration || undefined,
         onProgress: (r) => this.setWaveStatus(`${t("extractingWave")} ${Math.round(r * 100)}%`),
       });
       if (ac.signal.aborted) return;
@@ -3785,7 +3874,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
     cancelAnimationFrame(this.subtitleFrameRaf);
     this.subtitleFrameRaf = requestAnimationFrame(() => {
       this.subtitleFrameRaf = 0;
-      if (this.video?.paused) this.pushSubtitles(true);
+      // During a seek the decoder has not yet presented the requested frame. Sending a
+      // replacement ASS track here races the player's own seeked render and can leave
+      // the previous transform on canvas. The seeked listener requests the final repaint.
+      if (this.video?.paused && !this.video.seeking) this.pushSubtitles(true);
     });
   }
 
@@ -3816,6 +3908,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private stopAndSeek(ms: number): void {
+    this.audio.stop();
+    this.audio.seek(ms / 1000);
     this.playRangeStop?.();
     this.playRangeStop = null;
     if (!this.video) return;
@@ -3952,20 +4046,21 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.mediaLoadGeneration += 1;
     this.stopDebugNoise();
     this.debugNoise = false;
-    this.waveAbort?.abort();
     this.clearPlaybackRuntime();
     this.mediaFile = null;
-    this.analysisMediaBlob = null;
-    this.decodedMono16k = null;
-    this.spectrumCancel?.();
-    this.spectrumCancel = null;
-    this.spectrumData = null;
     this.lastVideoPointer = null;
     delete this.root.dataset.mediaKind;
     delete this.root.dataset.mediaName;
-    delete this.root.dataset.audioFallback;
-    this.timeline?.clearPeaks();
+    delete this.root.dataset.mediaLoading;
     this.renderPreviewPlaceholder();
+  }
+
+  private playAudioRange(startMs: number, endMs: number | (() => number)): void {
+    if (!this.audio.element) { this.toast("请先加载音频。"); return; }
+    this.video?.pause();
+    this.playRangeStop?.();
+    this.playRangeStop = null;
+    this.audio.play(startMs, endMs);
   }
 
   private playRange(startMs: number, endMs: number): void {
@@ -3993,16 +4088,19 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   private async saveSelectedAudioClip(): Promise<void> {
     const cue = this.selectedCue();
-    if (!cue || !this.mediaFile) {
-      this.toast("Load media and select a subtitle line first.");
+    if (!cue || !this.audio.analysisBlob) {
+      this.toast("Load audio and select a subtitle line first.");
       return;
     }
+    const generation = this.audioLoadGeneration;
     try {
       this.setWaveStatus("Decoding audio clip…");
-      this.decodedMono16k ??= await decodeAudioToMono16k(this.analysisMediaBlob ?? this.mediaFile, {
+      const decoded = this.decodedMono16k ?? await decodeAudioToMono16k(this.audio.analysisBlob, {
         signal: this.waveAbort?.signal,
-        durationHint: this.video?.duration || undefined,
+        durationHint: this.audio.duration || undefined,
       });
+      if (generation !== this.audioLoadGeneration) return;
+      this.decodedMono16k = decoded;
       const start = Math.max(0, Math.floor(cue.startMs * 16));
       const end = Math.min(this.decodedMono16k.length, Math.ceil(cue.endMs * 16));
       const blob = pcm16Wav(this.decodedMono16k.subarray(start, end), 16000);
@@ -4015,7 +4113,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     } catch (error) {
       this.toast(error instanceof Error ? error.message : String(error));
     } finally {
-      this.setWaveStatus("");
+      if (generation === this.audioLoadGeneration) this.setWaveStatus("");
     }
   }
 
@@ -4030,23 +4128,28 @@ class SubtitleEditor implements SubtitleEditorHandle {
       this.timeline?.setSpectrum(this.spectrumData);
       return;
     }
-    if (!this.mediaFile) {
-      this.toast("Load audio or video before opening the spectrum display.");
+    if (!this.audio.analysisBlob) {
+      this.toast("Load audio before opening the spectrum display.");
       return;
     }
+    const generation = this.audioLoadGeneration;
     try {
       this.setWaveStatus("Decoding audio for spectrum…");
-      this.decodedMono16k ??= await decodeAudioToMono16k(this.analysisMediaBlob ?? this.mediaFile, { durationHint: this.video?.duration || undefined });
+      const decoded = this.decodedMono16k ?? await decodeAudioToMono16k(this.audio.analysisBlob, { durationHint: this.audio.duration || undefined });
+      if (generation !== this.audioLoadGeneration || this.audioViewMode !== "spectrum") return;
+      this.decodedMono16k = decoded;
       this.spectrumCancel?.();
       const run = computeSpectrum(this.decodedMono16k, 16000, (ratio) => this.setWaveStatus(`Spectrum ${Math.round(ratio * 100)}%`));
       this.spectrumCancel = run.cancel;
-      this.spectrumData = await run.done;
+      const data = await run.done;
+      if (generation !== this.audioLoadGeneration) return;
+      this.spectrumData = data;
       this.spectrumCancel = null;
-      this.timeline?.setSpectrum(this.spectrumData);
+      if (this.audioViewMode === "spectrum") this.timeline?.setSpectrum(this.spectrumData);
     } catch (error) {
       this.toast(error instanceof Error ? error.message : String(error));
     } finally {
-      this.setWaveStatus("");
+      if (generation === this.audioLoadGeneration) this.setWaveStatus("");
     }
   }
 
@@ -4160,7 +4263,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       this.toast(t("timingNeedsVideo"));
       return;
     }
-    this.seekTo(cue.startMs, true);
+    this.playRange(cue.startMs, cue.endMs);
   }
 
   private toggleFollow(): void {
@@ -4187,7 +4290,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   // --- keyboard ------------------------------------------------------------
 
-  private hotkeyContextForTarget(target: HTMLElement | null): AegisubHotkeyContext {
+  private hotkeyContextForTarget(target: Element | null): AegisubHotkeyContext {
     if (!target) return "default";
     if (target === this.detailTextarea || target.closest(".se-detail textarea")) return "edit-box";
     if (target.closest(".se-timeline-wrap")) return "audio";
@@ -4197,7 +4300,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private onContextActivation = (event: Event): void => {
-    const target = event.target instanceof HTMLElement ? event.target : null;
+    const target = event.target instanceof Element ? event.target : null;
     const context = this.hotkeyContextForTarget(target);
     if (context !== "default") this.activeHotkeyContext = context;
   };
@@ -4212,6 +4315,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   };
 
   private onKeydown = (e: KeyboardEvent): void => {
+    if (e.isComposing || e.defaultPrevented) return;
     // Save shortcuts fire even while typing (and pre-empt the browser's own save dialog), but
     // only when subedit owns saving; when a host owns it (showSave:false), let the key pass so
     // the host handles it. Save-into-video only acts when a media file is actually loaded.
@@ -4232,10 +4336,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
       return;
     }
 
-    const target = e.target as HTMLElement;
+    const target = e.target instanceof Element ? e.target : this.root;
     const typing =
-      target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable;
-    const alwaysCommand = resolveAegisubOverrideHotkey(e, false);
+      target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || (target instanceof HTMLElement && target.isContentEditable);
+    const alwaysCommand = resolveAegisubOverrideHotkey(e, localStorage.getItem("aegisub-web.global-hotkeys") === "true");
     if (alwaysCommand) {
       e.preventDefault();
       this.runAegisubCommand(alwaysCommand);
@@ -4243,20 +4347,17 @@ class SubtitleEditor implements SubtitleEditorHandle {
     }
     let context = this.hotkeyContextForTarget(target);
     if (context === "default" && !typing) context = this.activeHotkeyContext;
-    const videoToolKey = !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && /^[asdfghj]$/i.test(e.key);
-    if (!typing && this.video && context !== "audio" && videoToolKey) context = "video";
+    if (typing && context !== "edit-box") context = "default";
+    if (!typing && context === "audio" && e.key === "Escape") {
+      e.preventDefault();
+      this.timingDraft.clear();
+      this.renderTimingDraft();
+      return;
+    }
     const contextCommand = resolveAegisubContextHotkey(e, context);
     if (contextCommand) {
       e.preventDefault();
       this.runAegisubCommand(contextCommand);
-      return;
-    }
-    const globalAudioCommand = localStorage.getItem("aegisub-web.global-hotkeys") === "true"
-      ? resolveAegisubOverrideHotkey(e, true)
-      : undefined;
-    if (globalAudioCommand) {
-      e.preventDefault();
-      this.runAegisubCommand(globalAudioCommand);
       return;
     }
     const defaultCommand = resolveAegisubDefaultHotkey(e);
@@ -4732,6 +4833,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const selected = new Set(this.selectedIds);
     const selectedIds = [...selected];
     const selectedCue = this.selectedCue();
+    const audioRange = this.audioSelection();
     const playhead = this.currentPlayheadMs();
     const frameDuration = this.currentFrameDuration();
 
@@ -4866,15 +4968,15 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "time/snap/start_video": this.setSelectedEdges("start", playhead); return true;
       case "time/snap/end_video": this.setSelectedEdges("end", playhead); return true;
       case "time/snap/scene": this.applyCueList(snapSelectedToScene(this.doc.cues, selected, this.keyframesMs, playhead), selectedIds); return true;
-      case "time/lead/in": this.applyCueList(addLead(this.doc.cues, selected, Number(localStorage.getItem("aegisub-web.lead-in")) || 100, 0), selectedIds); return true;
-      case "time/lead/out": this.applyCueList(addLead(this.doc.cues, selected, 0, Number(localStorage.getItem("aegisub-web.lead-out")) || 100), selectedIds); return true;
-      case "time/lead/both": this.applyCueList(addLead(this.doc.cues, selected, Number(localStorage.getItem("aegisub-web.lead-in")) || 100, Number(localStorage.getItem("aegisub-web.lead-out")) || 100), selectedIds); return true;
-      case "time/start/increase": this.applyCueList(nudgeTimingUnit(this.doc.cues, selected, "start", frameDuration), selectedIds); return true;
-      case "time/start/decrease": this.applyCueList(nudgeTimingUnit(this.doc.cues, selected, "start", -frameDuration), selectedIds); return true;
-      case "time/length/increase": this.applyCueList(nudgeTimingUnit(this.doc.cues, selected, "length", frameDuration), selectedIds); return true;
-      case "time/length/decrease": this.applyCueList(nudgeTimingUnit(this.doc.cues, selected, "length", -frameDuration), selectedIds); return true;
-      case "time/length/increase/shift": this.applyCueList(nudgeTimingUnit(this.doc.cues, selected, "length-shift", frameDuration), selectedIds); return true;
-      case "time/length/decrease/shift": this.applyCueList(nudgeTimingUnit(this.doc.cues, selected, "length-shift", -frameDuration), selectedIds); return true;
+      case "time/lead/in": this.adjustAudioTiming(-(Number(localStorage.getItem("aegisub-web.lead-in")) || 100), 0); return true;
+      case "time/lead/out": this.adjustAudioTiming(0, Number(localStorage.getItem("aegisub-web.lead-out")) || 100); return true;
+      case "time/lead/both": this.adjustAudioTiming(-(Number(localStorage.getItem("aegisub-web.lead-in")) || 100), Number(localStorage.getItem("aegisub-web.lead-out")) || 100); return true;
+      case "time/start/increase": this.adjustAudioTiming(10, 0); return true;
+      case "time/start/decrease": this.adjustAudioTiming(-10, 0); return true;
+      case "time/length/increase":
+      case "time/length/increase/shift": this.adjustAudioTiming(0, 10); return true;
+      case "time/length/decrease":
+      case "time/length/decrease/shift": this.adjustAudioTiming(0, -10); return true;
       case "time/next": this.moveSelection(1); return true;
       case "time/prev": this.moveSelection(-1); return true;
       case "time/shift": openShiftTimesDialog(this.dialogHost()); return true;
@@ -4947,50 +5049,54 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "tool/translation_assistant/prev": if (this.assistant?.kind === "translation") this.assistant.prev(); return true;
       case "tool/translation_assistant/insert_original": if (this.assistant?.kind === "translation") this.assistant.insertOriginal(); return true;
 
-      case "audio/close": this.closeMedia(); return true;
-      case "audio/open": this.pickVideo(); return true;
+      case "audio/close": this.closeAudio(); return true;
+      case "audio/open": this.pickAudio(); return true;
       case "audio/open/blank": void this.openDummyMedia("blank"); return true;
       case "audio/open/noise": void this.openDummyMedia("noise"); return true;
-      case "audio/open/video": this.setMobilePane("audio"); if (!this.video) this.pickVideo(); return true;
+      case "audio/open/video": this.setMobilePane("audio"); if (this.mediaFile) void this.loadAudio(this.mediaFile, true); else this.toast("请先打开视频。"); return true;
       case "audio/view/spectrum": void this.showAudioView("spectrum"); return true;
       case "audio/view/waveform": void this.showAudioView("waveform"); return true;
       case "audio/save/clip": void this.saveSelectedAudioClip(); return true;
-      case "audio/play/current":
       case "audio/play/line":
+        if (selectedCue) this.playAudioRange(selectedCue.startMs, selectedCue.endMs); return true;
+      case "audio/play/current":
+        if (audioRange) this.playAudioRange(audioRange.startMs, audioRange.endMs); return true;
+      case "audio/play/toggle":
+        if (this.audio.playing) { this.audio.stop(); return true; }
+        // Falls through to the active selection, as the desktop B command does.
       case "audio/play/selection":
-      case "audio/play/toggle": this.playFromSelected(); return true;
-      case "audio/play/selection/before": if (selectedCue) this.playRange(Math.max(0, selectedCue.startMs - 500), selectedCue.startMs); return true;
-      case "audio/play/selection/after": if (selectedCue) this.playRange(selectedCue.endMs, selectedCue.endMs + 500); return true;
-      case "audio/play/selection/end": if (selectedCue) this.playRange(Math.max(selectedCue.startMs, selectedCue.endMs - 500), selectedCue.endMs); return true;
-      case "audio/play/selection/begin": if (selectedCue) this.playRange(selectedCue.startMs, Math.min(selectedCue.endMs, selectedCue.startMs + 500)); return true;
-      case "audio/play/to_end": if (selectedCue && this.video) this.playRange(selectedCue.startMs, Number.isFinite(this.video.duration) ? this.video.duration * 1000 : selectedCue.endMs); return true;
-      case "audio/commit": this.renderDetail(); if (localStorage.getItem("aegisub-web.audio-autonext") === "true") this.moveSelection(1); return true;
-      case "audio/commit/stay": this.renderDetail(); return true;
-      case "audio/commit/next": this.moveSelection(1); return true;
-      case "audio/commit/default": {
-        const index = this.doc.cues.findIndex((cue) => cue.id === this.selectedId);
-        this.moveSelection(1);
-        const next = this.doc.cues[index + 1];
-        if (next && selectedCue) this.updateCue(next.id, { startMs: selectedCue.endMs, endMs: selectedCue.endMs + 1000 });
-        return true;
-      }
-      case "audio/go_to": if (selectedCue) this.seekTo((selectedCue.startMs + selectedCue.endMs) / 2); return true;
-      case "audio/go_to/start": if (selectedCue) this.seekTo(selectedCue.startMs); return true;
-      case "audio/go_to/end": if (selectedCue) this.seekTo(selectedCue.endMs); return true;
+        if (audioRange) this.playAudioRange(audioRange.startMs, () => this.audioSelection()?.endMs ?? audioRange.endMs); return true;
+      case "audio/play/selection/before": if (audioRange) this.playAudioRange(Math.max(0, audioRange.startMs - 500), audioRange.startMs); return true;
+      case "audio/play/selection/after": if (audioRange) this.playAudioRange(audioRange.endMs, audioRange.endMs + 500); return true;
+      case "audio/play/selection/end": if (audioRange) this.playAudioRange(Math.max(audioRange.startMs, audioRange.endMs - 500), audioRange.endMs); return true;
+      case "audio/play/selection/begin": if (audioRange) this.playAudioRange(audioRange.startMs, Math.min(audioRange.endMs, audioRange.startMs + 500)); return true;
+      case "audio/play/to_end": if (audioRange) this.playAudioRange(audioRange.startMs, this.audio.duration * 1000); return true;
+      case "audio/commit": this.commitAudioTiming(localStorage.getItem("aegisub-web.audio-autonext") !== "false"); return true;
+      case "audio/commit/stay": this.commitAudioTiming(false); return true;
+      case "audio/commit/next": this.commitAudioTiming(true); return true;
+      case "audio/commit/default": this.commitAudioTiming(true, true); return true;
+      case "audio/go_to": if (audioRange) this.timeline?.centerOn((audioRange.startMs + audioRange.endMs) / 2000); return true;
+      case "audio/go_to/start": if (audioRange) this.timeline?.centerOn(audioRange.startMs / 1000); return true;
+      case "audio/go_to/end": if (audioRange) this.timeline?.centerOn(audioRange.endMs / 1000); return true;
       case "audio/scroll/left": this.timeline?.panBy(-2); return true;
       case "audio/scroll/right": this.timeline?.panBy(2); return true;
-      case "audio/stop":
+      case "audio/stop": this.audio.stop(); return true;
       case "video/stop": if (this.video) this.stopAndSeek(this.video.currentTime * 1000); return true;
       case "audio/playback/speed/increase": this.setPlaybackRate(this.getPlaybackRate() + 0.05); return true;
       case "audio/playback/speed/decrease": this.setPlaybackRate(this.getPlaybackRate() - 0.05); return true;
       case "audio/opt/autoscroll": this.toggleFollow(); return true;
-      case "audio/opt/autocommit": this.toast("Timing edits are committed immediately in the browser editor; autocommit is always active."); return true;
-      case "audio/opt/autonext": localStorage.setItem("aegisub-web.audio-autonext", String(localStorage.getItem("aegisub-web.audio-autonext") !== "true")); return true;
+      case "audio/opt/autocommit":
+      case "audio/opt/autonext": {
+        const key = command.endsWith("autocommit") ? "audio-autocommit" : "audio-autonext";
+        const checkbox = this.root.querySelector<HTMLInputElement>(`[data-audio-option="${key}"]`);
+        if (checkbox) { checkbox.checked = !checkbox.checked; checkbox.dispatchEvent(new Event("change")); }
+        return true;
+      }
       case "audio/opt/vertical_link": this.toast("Waveform gain auto-scales and playback volume stays with the browser; there are no separate native sliders to link."); return true;
       case "audio/opt/spectrum": void this.showAudioView(this.audioViewMode === "spectrum" ? "waveform" : "spectrum"); return true;
       case "audio/karaoke": {
         this.setMobilePane("audio");
-        if (selectedCue) openKaraoke(selectedCue, this.video, this.wavePeaks, this.cueColorHex(selectedCue, "2c", "SecondaryColour"), (text) => this.updateCue(selectedCue.id, { text }));
+        if (selectedCue) openKaraoke(selectedCue, this.audio.element, this.wavePeaks, this.cueColorHex(selectedCue, "2c", "SecondaryColour"), (text) => this.updateCue(selectedCue.id, { text }));
         return true;
       }
 
@@ -5105,6 +5211,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
     if (this.video) {
       this.video.playbackRate = clamped;
       this.video.preservesPitch = true;
+    }
+    if (this.audio.element) {
+      this.audio.element.playbackRate = clamped;
+      this.audio.element.preservesPitch = true;
     }
     localStorage.setItem("aegisub-web.playback-rate", String(clamped));
   }
@@ -5291,7 +5401,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.waveAbort?.abort();
     this.clearPlaybackRuntime();
     this.mediaFile = null;
-    this.analysisMediaBlob = null;
+    this.audioLoadGeneration++;
+    this.audio.destroy();
     this.decodedMono16k = null;
     this.wavePeaks = null;
     this.stopDebugNoise();

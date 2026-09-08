@@ -2,6 +2,10 @@
 
 An installable Aegisub-compatible subtitle workstation for timing, styling, karaoke and media workflows.
 
+Work in progress: this is not yet a complete desktop replica. The command/menu inventory
+does not prove behavioral parity. See [the replication acceptance plan](docs/REPLICATION_PLAN.md)
+for verified changes, known gaps and the desktop comparison required before completion.
+
 **Live app:** https://samgum.github.io/aegisub-web/
 
 The desktop workspace follows Aegisub's native video/audio/editor/grid hierarchy and uses the

@@ -14,7 +14,10 @@ describe("upstream Aegisub command parity contract", () => {
     const summary = aegisubParitySummary();
     expect(summary.implemented + summary["browser-replacement"] + summary.partial + summary.missing).toBe(243);
     expect(summary.missing).toBe(0);
-    expect(summary.partial).toBe(0);
+    expect(summary.partial).toBeGreaterThan(0);
+    for (const command of ["video/tool/rotate/z", "audio/open/noise", "audio/save/clip", "video/frame/next", "am/manager"]) {
+      expect(aegisubCommandStatus(command)).toBe("partial");
+    }
   });
 
   it("routes every classified command through the editor or application shell", () => {

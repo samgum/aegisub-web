@@ -5,6 +5,7 @@
 // no audio decoded (blocks + playhead only); peaks are added via setPeaks when available.
 
 import type { Cue } from "./cue";
+import { AudioTimingGesture } from "./audio-timing-gesture";
 import type { SpectrumData } from "./spectrum";
 
 export interface TimelineCallbacks {
@@ -12,6 +13,7 @@ export interface TimelineCallbacks {
   getDuration: () => number; // media duration (s); 0 if unknown
   getCurrentTime: () => number; // s
   getSelectedId: () => string | null;
+  getSelectedIds?: () => string[];
   onSeek: (sec: number) => void;
   onSelectCue: (id: string) => void;
   onRetime: (id: string, startMs: number, endMs: number, commit: boolean) => void;
@@ -36,7 +38,6 @@ type Palette = {
   border: string;
 };
 
-type DragMode = "move" | "start" | "end";
 
 export class Timeline {
   private canvas!: HTMLCanvasElement;
@@ -53,7 +54,8 @@ export class Timeline {
   private pal!: Palette;
   private ro: ResizeObserver | null = null;
   private raf = 0;
-  private drag: { id: string; mode: DragMode; grabSec: number; startMs: number; endMs: number } | null = null;
+  private drag: AudioTimingGesture | null = null;
+  private dragOriginal: Cue[] = [];
   private pan: { startX: number; startScroll: number; moved: boolean } | null = null;
   private dpr = Math.min(2, typeof devicePixelRatio === "number" ? devicePixelRatio : 1);
 
@@ -64,6 +66,8 @@ export class Timeline {
   mount(container: HTMLElement): void {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "se-timeline";
+    this.canvas.tabIndex = 0;
+    this.canvas.setAttribute("aria-label", "音频时间轴");
     this.canvas.dataset.audioView = this.audioView;
     this.canvas.style.width = "100%";
     this.canvas.style.height = "100%";
@@ -111,6 +115,11 @@ export class Timeline {
     this.render();
   }
 
+  clearSpectrum(): void {
+    this.spectrum = null;
+    this.render();
+  }
+
   setSpectrum(spectrum: SpectrumData): void {
     this.spectrum = spectrum;
     this.audioView = "spectrum";
@@ -127,6 +136,12 @@ export class Timeline {
   panBy(seconds: number): void {
     const visible = this.width / this.pxPerSec;
     this.scrollSec = clamp(this.scrollSec + seconds, 0, Math.max(0, this.totalDuration() - visible));
+    this.render();
+  }
+
+  centerOn(seconds: number): void {
+    const visible = this.width / this.pxPerSec;
+    this.scrollSec = clamp(seconds - visible / 2, 0, Math.max(0, this.totalDuration() - visible));
     this.render();
   }
 
@@ -388,7 +403,7 @@ export class Timeline {
 
   // --- interaction ---------------------------------------------------------
 
-  private hitTest(x: number): { id: string; mode: DragMode } | null {
+  private hitTest(x: number): { id: string; mode: "start" | "end" | "move" } | null {
     for (const c of this.cb.getCues()) {
       const { x0, x1 } = this.cueRect(c);
       if (x >= x0 - EDGE_PX && x <= x1 + EDGE_PX) {
@@ -404,6 +419,7 @@ export class Timeline {
     if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
     e.preventDefault();
     const x = e.offsetX;
+    this.canvas.focus({ preventScroll: true });
     const y = e.offsetY;
     const timeMs = Math.max(0, Math.round(this.secOf(x) * 1000));
 
@@ -414,7 +430,7 @@ export class Timeline {
       this.render();
       return;
     }
-    if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+    if (e.button === 1) {
       this.pan = { startX: x, startScroll: this.scrollSec, moved: false };
       this.canvas.style.cursor = "grabbing";
       this.canvas.setPointerCapture(e.pointerId);
@@ -435,15 +451,15 @@ export class Timeline {
         }
       }
       if (!id || !cue) return;
-      const mode: DragMode = e.button === 2 ? "end" : "start";
-      const startMs = mode === "start" ? Math.min(timeMs, cue.endMs - 10) : cue.startMs;
-      const endMs = mode === "end" ? Math.max(timeMs, cue.startMs + 10) : cue.endMs;
-      this.cb.onSeek(timeMs / 1000);
-      this.cb.onRetime(id, Math.max(0, startMs), endMs, false);
-      this.drag = { id, mode, grabSec: this.secOf(x), startMs: Math.max(0, startMs), endMs };
+      this.dragOriginal = this.cb.getCues().map(cue => ({ ...cue }));
+      this.drag = new AudioTimingGesture(this.dragOriginal, id, this.cb.getSelectedIds?.() ?? [id], timeMs, {
+        button: e.button, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey, sensitivityMs: EDGE_PX * 1000 / this.pxPerSec,
+      });
+      this.publishDrag(false);
       this.canvas.setPointerCapture(e.pointerId);
       this.canvas.addEventListener("pointermove", this.onPointerMove);
       this.canvas.addEventListener("pointerup", this.onPointerUp);
+      this.canvas.addEventListener("pointercancel", this.onPointerCancel);
       this.render();
       return;
     }
@@ -498,44 +514,40 @@ export class Timeline {
     return best;
   }
 
+  private publishDrag(commit: boolean): void {
+    const ranges = this.drag?.ranges() ?? [];
+    ranges.forEach(({ id, range }, index) => this.cb.onRetime(id, range.startMs, range.endMs, commit && index === ranges.length - 1));
+    this.render();
+  }
+
   private onPointerMove = (e: PointerEvent): void => {
     if (!this.drag) return;
-    const deltaSec = this.secOf(e.offsetX) - this.drag.grabSec;
-    let start = this.drag.startMs;
-    let end = this.drag.endMs;
-    const dms = Math.round(deltaSec * 1000);
-    const id = this.drag.id;
-    if (this.drag.mode === "move") {
-      start += dms;
-      end += dms;
-      if (start < 0) {
-        end -= start;
-        start = 0;
-      }
-      // Snap whichever edge lands nearest a target, shifting both by the same amount.
-      const ss = this.snapMs(start, id);
-      const se = this.snapMs(end, id);
-      const adj = ss !== start && (se === end || Math.abs(ss - start) <= Math.abs(se - end)) ? ss - start : se !== end ? se - end : 0;
-      start += adj;
-      end += adj;
-    } else if (this.drag.mode === "start") {
-      start = Math.min(Math.max(0, this.snapMs(start + dms, id)), end - 10);
-    } else {
-      end = Math.max(this.snapMs(end + dms, id), start + 10);
-    }
-    this.cb.onRetime(id, start, end, false);
-    this.render();
+    const ms = Math.max(0, Math.round(this.secOf(e.offsetX) * 1000));
+    this.drag.move(e.shiftKey ? this.snapMs(ms, this.cb.getSelectedId() ?? "") : ms);
+    this.publishDrag(false);
   };
 
-  private onPointerUp = (e: PointerEvent): void => {
-    if (this.drag) {
-      const c = this.cb.getCues().find((k) => k.id === this.drag!.id);
-      if (c) this.cb.onRetime(this.drag.id, c.startMs, c.endMs, true);
-    }
+  private finishDrag(e: PointerEvent): void {
     this.drag = null;
-    this.canvas.releasePointerCapture(e.pointerId);
+    this.dragOriginal = [];
+    if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
     this.canvas.removeEventListener("pointermove", this.onPointerMove);
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
+    this.canvas.removeEventListener("pointercancel", this.onPointerCancel);
+  }
+
+  private onPointerUp = (e: PointerEvent): void => {
+    this.publishDrag(true);
+    this.finishDrag(e);
+  };
+
+  private onPointerCancel = (e: PointerEvent): void => {
+    for (const { id } of this.drag?.ranges() ?? []) {
+      const cue = this.dragOriginal.find(cue => cue.id === id);
+      if (cue) this.cb.onRetime(id, cue.startMs, cue.endMs, false);
+    }
+    this.finishDrag(e);
+    this.render();
   };
 
   private onDblClick = (e: MouseEvent): void => {

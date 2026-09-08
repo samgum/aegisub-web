@@ -7,6 +7,7 @@ async function expectMediaPlayback(media: import("@playwright/test").Locator, pr
 
 test("opens and edits a real ASS project in the platform workspace", async ({ page }, testInfo) => {
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator("#file").setInputFiles("test-corpus/base.ass");
   await expect(page.locator(".se-row")).toHaveCount(6);
   await expect(page.locator(".se-text").filter({ hasText: "Hello, world." })).toBeVisible();
@@ -64,6 +65,7 @@ test("opens and edits a real ASS project in the platform workspace", async ({ pa
 test("uses platform keyboard shortcuts in the subtitle grid", async ({ page }, testInfo) => {
   test.skip(/android|ipad|iphone/.test(testInfo.project.name), "hardware keyboard is optional on touch projects");
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator("#file").setInputFiles("test-corpus/base.ass");
   await page.locator(".se-row").first().click();
   await page.keyboard.press("ArrowDown");
@@ -75,6 +77,7 @@ test("uses platform keyboard shortcuts in the subtitle grid", async ({ page }, t
 
 test("undoes a literal ASS line break like ordinary text", async ({ page }, testInfo) => {
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator("#file").setInputFiles("test-corpus/base.ass");
   const textarea = page.locator(".se-detail textarea");
   await textarea.focus();
@@ -90,6 +93,7 @@ test("undoes a literal ASS line break like ordinary text", async ({ page }, test
 test("supports touch selection and timing edits", async ({ page }, testInfo) => {
   test.skip(!/android|ipad|iphone/.test(testInfo.project.name), "touch workflow belongs to mobile projects");
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator("#file").setInputFiles("test-corpus/base.ass");
   const row = await page.locator(".se-row").nth(1).boundingBox();
   expect(row).not.toBeNull();
@@ -158,8 +162,8 @@ test("handles installed-app file launch and offline reload", async ({ page, cont
     const consumer = (window as unknown as { __launchConsumer?: (params: unknown) => Promise<void> | void }).__launchConsumer;
     await consumer?.({ files: [{ getFile: async () => file }] });
   });
-  await expect(page.locator('.se-root[data-media-name="launched.wav"]')).toBeVisible();
-  await expect(page.locator(".se-playerhost audio")).toBeAttached();
+  await expect(page.locator('.se-root[data-audio-name="launched.wav"]')).toBeVisible();
+  await expect(page.locator(".se-audio-player audio")).toBeAttached();
 
   await page.evaluate(async () => { await navigator.serviceWorker.ready; });
   await page.reload();
@@ -197,6 +201,7 @@ test("writes subtitles through the Chromium file-system path", async ({ page }, 
     });
   });
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator("#file").setInputFiles("test-corpus/base.ass");
   await page.locator(".se-detail textarea").fill("Direct writer result");
   await page.evaluate(() => (window as unknown as { subHandle: { runAegisubCommand(command: string): boolean } }).subHandle.runAegisubCommand("subtitle/save/as"));
@@ -207,6 +212,7 @@ test("writes subtitles through the Chromium file-system path", async ({ page }, 
 test("keeps media while opening subtitles and reproduces desktop timing interactions", async ({ page }, testInfo) => {
   test.skip(/android|ipad|iphone/.test(testInfo.project.name), "desktop mouse workflow");
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator("#media-file").setInputFiles("test-corpus/tiny-timing.mp4");
   const video = page.locator(".se-playerhost video");
   await expect(video).toBeVisible();
@@ -235,7 +241,7 @@ test("keeps media while opening subtitles and reproduces desktop timing interact
   ]);
 
   const host = await page.locator(".se-playerhost").boundingBox();
-  const stageBefore = await page.locator(".ot-media-stage").boundingBox();
+  const stageBefore = await page.locator(".se-playerhost .ot-media-stage").boundingBox();
   expect(host).not.toBeNull();
   expect(stageBefore).not.toBeNull();
   expect(stageBefore!.width).toBeLessThanOrEqual(host!.width + 1);
@@ -249,6 +255,7 @@ test("keeps media while opening subtitles and reproduces desktop timing interact
   expect(canvas).not.toBeNull();
   await page.mouse.click(canvas!.x + canvas!.width * .2, canvas!.y + canvas!.height * .6, { button: "left" });
   await page.mouse.click(canvas!.x + canvas!.width * .8, canvas!.y + canvas!.height * .6, { button: "right" });
+  await page.locator(".se-timeline").press("g");
   const retimed = await page.evaluate(() => (window as unknown as { subHandle: { getDoc(): { cues: { startMs: number; endMs: number }[] } } }).subHandle.getDoc().cues[0]);
   expect(retimed.startMs).toBeGreaterThan(1500);
   expect(retimed.startMs).toBeLessThan(2500);
@@ -259,17 +266,19 @@ test("keeps media while opening subtitles and reproduces desktop timing interact
 test("plays WAV, FLAC, Opus, Vorbis, MP3, AAC, AIFF and CAF through the common audio workspace", async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
+  await page.locator("#file").setInputFiles({ name: "audio-test.srt", mimeType: "text/plain", buffer: Buffer.from("1\n00:00:00,000 --> 00:00:00,800\nAudio\n") });
   const fixtures = ["tiny.wav", "tiny.flac", "tiny.opus", "tiny.ogg", "tiny.mp3", "tiny-aac.m4a", "tiny.aiff", "tiny.caf"];
   for (const filename of fixtures) {
     await page.locator("#media-file").setInputFiles(`test-corpus/${filename}`);
-    await expect.poll(() => page.locator(".se-root").getAttribute("data-media-name")).toBe(filename);
+    await expect.poll(() => page.locator(".se-root").getAttribute("data-audio-name")).toBe(filename);
     await expect(page.locator(".se-root")).not.toHaveAttribute("data-media-loading", "true");
-    const audio = page.locator(".se-playerhost audio").first();
+    const audio = page.locator(".se-audio-player audio").first();
     await expect(audio).toBeAttached();
     await expect.poll(() => audio.evaluate((element) => element.duration)).toBeGreaterThan(.5);
     expect(await audio.evaluate((element) => element.controls)).toBe(false);
-    if (/android|ipad|iphone/.test(testInfo.project.name)) await page.getByRole("tab", { name: "视频" }).click();
-    await page.locator(".se-video-controls button").first().click();
+    if (/android|ipad|iphone/.test(testInfo.project.name)) await page.getByRole("tab", { name: "音频" }).click();
+    await page.locator(".se-audio-controls button[aria-label='播放选择']").click();
     await expectMediaPlayback(audio, testInfo.project.name, .04);
   }
 });
@@ -281,13 +290,14 @@ test("decodes ALAC audio and does not retain local media blobs across refresh", 
   await page.reload();
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
 
+  await page.locator("#file").setInputFiles({ name: "audio-test.srt", mimeType: "text/plain", buffer: Buffer.from("1\n00:00:00,000 --> 00:00:00,800\nAudio\n") });
   await page.locator("#media-file").setInputFiles("test-corpus/tiny-alac.m4a");
   await expect(page.locator('.se-root[data-audio-fallback="alac-ready"]')).toBeVisible({ timeout: 120_000 });
-  const audio = page.locator(".se-playerhost audio").first();
+  const audio = page.locator(".se-audio-player audio").first();
   await expect(audio).toBeAttached();
   expect(await audio.evaluate((element) => element.controls)).toBe(false);
-  if (/android|ipad|iphone/.test(testInfo.project.name)) await page.getByRole("tab", { name: "视频" }).click();
-  await page.locator(".se-video-controls button").first().click();
+  if (/android|ipad|iphone/.test(testInfo.project.name)) await page.getByRole("tab", { name: "音频" }).click();
+  await page.locator(".se-audio-controls button[aria-label='播放选择']").click();
   await expectMediaPlayback(audio, testInfo.project.name, .1);
   const oldBlobUrl = await audio.evaluate((element) => element.currentSrc);
   await page.reload();
@@ -309,6 +319,7 @@ test("decodes ALAC audio and does not retain local media blobs across refresh", 
 test("creates a configured blank video instead of a placeholder command", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "windows-chromium", "WebCodecs encoder smoke path");
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator('.quickbar [data-aegisub-command="video/open/dummy"]').click();
   const numbers = page.locator('.ad-modal input[type="number"]');
   await numbers.nth(0).fill("320");
@@ -327,6 +338,7 @@ test("renders CJK glyphs and timed ASS effects at the selected frame", async ({ 
   test.setTimeout(60_000);
   const ass = `[Script Info]\nScriptType: v4.00+\nPlayResX: 384\nPlayResY: 288\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: CJK,Source Han Sans CN Medium,48,&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,1,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:04.00,CJK,,0,0,0,,{\\an5\\pos(192,144)\\fad(1000,1000)}中文特效预览\nDialogue: 0,0:00:04.00,0:00:08.00,CJK,,0,0,0,,{\\an5\\move(45,144,339,144,0,3000)}移动测试\nDialogue: 0,0:00:08.00,0:00:10.00,CJK,,0,0,0,,{\\an5\\pos(192,144)\\clip(50,80,334,208)\\t(0,1600,\\fscx160)}{\\k50}卡{\\k50}拉{\\k50}OK\n`;
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator("#file").setInputFiles({ name: "cjk-effects.ass", mimeType: "text/plain", buffer: Buffer.from(ass) });
   await page.locator("#media-file").setInputFiles("test-corpus/tiny-timing.mp4");
   await expect(page.locator('.se-root[data-bundled-preview-fonts="2"]')).toBeVisible({ timeout: 30_000 });
@@ -378,6 +390,7 @@ test("renders CJK glyphs and timed ASS effects at the selected frame", async ({ 
 test("routes upstream grid, video and edit-box hotkey contexts", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "windows-chromium", "representative focused-control routing");
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => !!(window as unknown as { subHandle?: unknown }).subHandle)).toBe(true);
   await page.locator("#file").setInputFiles("test-corpus/base.ass");
   await page.locator("#media-file").setInputFiles("test-corpus/tiny-timing.mp4");
   const video = page.locator(".se-playerhost video");
@@ -387,26 +400,24 @@ test("routes upstream grid, video and edit-box hotkey contexts", async ({ page }
   await page.locator(".se-inner").press("ArrowRight");
   await expect.poll(() => video.evaluate((element) => element.currentTime)).toBeGreaterThan(initial);
 
-  // With video loaded, visual-tool keys remain available from the grid or shell toolbar
-  // (but never steal letters from a text field or the focused audio timeline). This is the
-  // real S/D/F/G workflow, not an idealized test which focuses a hidden <video> first.
-  await page.locator("#open-media").focus();
+  // Native visual letters belong to Video context only. This checks routing, not visual-tool parity.
+  await video.focus();
   await page.keyboard.press("s");
   await expect(page.locator('.se-root[data-video-tool="video/tool/drag"]')).toBeVisible();
   await expect(page.locator(".se-posoverlay")).toBeVisible();
   await page.keyboard.press("Escape");
 
-  await page.locator("#open-media").focus();
+  await video.focus();
   await page.keyboard.press("d");
   await expect(page.locator('.se-root[data-video-tool="video/tool/rotate/z"]')).toBeVisible();
   await expect(page.locator('.se-video-tool.on[data-video-tool="video/tool/rotate/z"]')).toBeVisible();
   await expect(page.locator(".se-xform")).toBeVisible();
-  await page.locator("#open-media").focus();
+  await video.focus();
   await page.keyboard.press("f");
   await expect(page.locator('.se-root[data-video-tool="video/tool/rotate/xy"]')).toBeVisible();
   await expect(page.locator('.se-video-tool.on[data-video-tool="video/tool/rotate/xy"]')).toBeVisible();
   await expect(page.locator(".se-xform")).toBeVisible();
-  await page.locator("#open-media").focus();
+  await video.focus();
   await page.keyboard.press("g");
   await expect(page.locator('.se-root[data-video-tool="video/tool/scale"]')).toBeVisible();
   await expect(page.locator('.se-video-tool.on[data-video-tool="video/tool/scale"]')).toBeVisible();

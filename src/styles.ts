@@ -179,6 +179,10 @@ export function injectStyles(): void {
 .se-audio-controls{grid-row:2;display:flex;align-items:center;gap:1px;padding:2px 4px;background:#ededed;border-top:1px solid #a9a9a9;overflow-x:auto;scrollbar-width:none;}
 .se-audio-controls::-webkit-scrollbar{display:none;}
 .se-audio-button{flex:0 0 27px;width:27px;height:26px;}
+.se-audio-option{display:flex;align-items:center;white-space:nowrap;font-size:11px;gap:2px;padding:0 4px;}
+.se-audio-option input{margin:0;}
+.se-root[data-timing-pending="true"] .se-times:first-child input{background:#fff4c2;}
+.se-timeline:focus-visible{outline:2px solid #3875d6;outline-offset:-2px;}
 .se-timeline{touch-action:none;cursor:grab;}
 .se-wave-status{position:absolute;top:20px;left:10px;z-index:1;font-size:11px;color:var(--se-muted);pointer-events:none;}
 /* --- polish --- */

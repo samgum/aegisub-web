@@ -1,0 +1,184 @@
+import type { MediaPlayerHandle } from "mediaplay";
+import { createEmbeddedPlayer } from "./embedded-player";
+import { decodeAuroraAudioToWav, fileHasAlac } from "./alac";
+
+export function isAudioFile(file: File): boolean {
+  return file.type.startsWith("audio/") || /\.(?:aac|aif|aiff|alac|caf|flac|m4a|mp3|oga|ogg|opus|wav|w64|mka|ac3|eac3|dts|ape|wma)$/i.test(file.name);
+}
+
+const audioMime: Record<string, string> = {
+  wav: "audio/wav", flac: "audio/flac", opus: "audio/ogg", ogg: "audio/ogg", oga: "audio/ogg",
+  mp3: "audio/mpeg", aac: "audio/aac", m4a: "audio/mp4", alac: "audio/mp4",
+  caf: "audio/x-caf", aif: "audio/aiff", aiff: "audio/aiff",
+};
+
+/** Owns the audio file independently of the video preview, as Aegisub's AudioController does.
+ * Closing/replacing a video must never destroy this source or its waveform input. */
+export class AudioWorkspace {
+  file: File | null = null;
+  analysisBlob: Blob | null = null;
+  element: HTMLMediaElement | null = null;
+  fromVideo = false;
+  private player: MediaPlayerHandle | null = null;
+  private generation = 0;
+  private cancelRange: (() => void) | null = null;
+  private followingVideo = false;
+  private unbindVideo: (() => void) | null = null;
+
+  constructor(private host: HTMLElement, private callbacks: {
+    changed(): void;
+    error(message: string): void;
+    progress(message: string): void;
+  }) {}
+
+  get duration(): number { return Number.isFinite(this.element?.duration) ? this.element!.duration : 0; }
+  get currentTime(): number { return this.element?.currentTime ?? 0; }
+  get playing(): boolean { return this.element ? !this.element.paused : false; }
+
+  async load(file: File, fromVideo = false): Promise<boolean> {
+    this.close();
+    const generation = this.generation;
+    this.file = file;
+    this.analysisBlob = file;
+    this.fromVideo = fromVideo;
+    this.host.dataset.loading = "true";
+    this.host.dataset.filename = file.name;
+    this.callbacks.changed();
+    try {
+      const extension = file.name.split(".").pop()!.toLowerCase();
+      let blob: Blob = file;
+      // An audio element can read the audio track of MP4/WebM without decoding a second
+      // video preview. Non-native containers still use mediaplay's existing codec path.
+      let mime = audioMime[extension] ?? (/webm/i.test(file.type) ? "audio/webm" : isAudioFile(file) ? file.type : "audio/mp4");
+      const alac = /^(?:alac|m4a|mp4|mov|caf)$/.test(extension) && await fileHasAlac(file);
+      if (generation !== this.generation) return false;
+      if (/^(?:aif|aiff|caf)$/.test(extension) || alac) {
+        this.host.dataset.fallback = `${alac ? "alac" : "aurora"}-loading`;
+        this.callbacks.changed();
+        blob = await decodeAuroraAudioToWav(file, (ratio) => {
+          if (generation === this.generation) this.callbacks.progress(`正在解码音频… ${Math.round(ratio * 100)}%`);
+        });
+        mime = "audio/wav";
+        if (generation !== this.generation) return false;
+        this.host.dataset.fallback = `${alac ? "alac" : "aurora"}-ready`;
+      }
+      if (generation !== this.generation) return false;
+      this.analysisBlob = blob;
+      this.player = createEmbeddedPlayer(this.host, { blob, mime, filename: file.name }, {
+        embedded: true,
+        onError: (message) => { if (generation === this.generation) this.callbacks.error(message); },
+      });
+      this.element = this.player.getMediaElement() ?? null;
+      if (this.element) {
+        this.element.controls = false;
+        this.element.setAttribute("playsinline", "");
+        for (const event of ["play", "pause", "ended", "timeupdate", "loadedmetadata", "seeked"]) {
+          this.element.addEventListener(event, () => {
+            if (generation === this.generation) this.callbacks.changed();
+          });
+        }
+      }
+      delete this.host.dataset.loading;
+      this.callbacks.changed();
+      return true;
+    } catch (error) {
+      if (generation !== this.generation) return false;
+      this.close();
+      this.callbacks.error(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }
+
+  /** Video transport owns its own position; audio follows only during video playback.
+   * Audio-only audition deliberately leaves the displayed video frame paused. */
+  bindVideo(video: HTMLMediaElement | null): void {
+    this.unbindVideo?.();
+    this.unbindVideo = null;
+    this.followingVideo = false;
+    if (!video) return;
+    const sync = (): void => {
+      const audio = this.element;
+      if (!audio || !this.followingVideo) return;
+      audio.playbackRate = video.playbackRate;
+      if (Math.abs(audio.currentTime - video.currentTime) > .12) this.seek(video.currentTime);
+    };
+    const play = (): void => {
+      this.stop();
+      this.followingVideo = true;
+      this.seek(video.currentTime);
+      sync();
+      void this.element?.play().catch((e: Error) => this.callbacks.error(e.message));
+    };
+    const pause = (): void => { if (this.followingVideo) this.stop(); };
+    video.addEventListener("play", play);
+    video.addEventListener("pause", pause);
+    video.addEventListener("seeked", sync);
+    video.addEventListener("ratechange", sync);
+    video.addEventListener("timeupdate", sync);
+    this.unbindVideo = () => {
+      pause();
+      video.removeEventListener("play", play);
+      video.removeEventListener("pause", pause);
+      video.removeEventListener("seeked", sync);
+      video.removeEventListener("ratechange", sync);
+      video.removeEventListener("timeupdate", sync);
+    };
+    if (!video.paused) play();
+  }
+
+  seek(seconds: number): void {
+    // Some native WAV demuxers reject seeking exactly past the last PCM sample. A cue
+    // beyond a shorter independent audio file should park at its end, not invalidate it.
+    if (this.element) this.element.currentTime = Math.max(0, Math.min(seconds, this.duration ? Math.max(0, this.duration - .001) : seconds));
+  }
+
+  play(startMs: number, end: number | (() => number)): void {
+    this.stop();
+    const audio = this.element;
+    if (!audio) return;
+    this.seek(startMs / 1000);
+    let raf = 0;
+    let timer = 0;
+    let cancelled = false;
+    const check = (): void => {
+      if (cancelled) return;
+      const remaining = (typeof end === "function" ? end() : end) / 1000 - audio.currentTime;
+      if (remaining <= 0 || audio.ended) { this.stop(); return; }
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+      raf = requestAnimationFrame(check);
+      timer = window.setTimeout(check, Math.min(50, Math.max(1, remaining * 1000 / audio.playbackRate)));
+    };
+    this.cancelRange = () => { cancelled = true; cancelAnimationFrame(raf); clearTimeout(timer); };
+    void audio.play().then(check).catch((error: Error) => {
+      if (cancelled) return;
+      this.stop();
+      this.callbacks.error(error.message);
+    });
+  }
+
+  stop(): void {
+    this.followingVideo = false;
+    this.cancelRange?.();
+    this.cancelRange = null;
+    this.element?.pause();
+  }
+
+  close(): void {
+    this.generation += 1;
+    this.stop();
+    this.player?.destroy();
+    this.player = null;
+    this.element = null;
+    this.file = null;
+    this.analysisBlob = null;
+    this.fromVideo = false;
+    this.host.replaceChildren();
+    delete this.host.dataset.filename;
+    delete this.host.dataset.loading;
+    delete this.host.dataset.fallback;
+    this.callbacks.changed();
+  }
+
+  destroy(): void { this.bindVideo(null); this.close(); this.host.remove(); }
+}

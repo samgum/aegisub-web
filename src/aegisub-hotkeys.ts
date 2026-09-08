@@ -12,12 +12,11 @@ export type AegisubHotkeyContext = "default" | "grid" | "video" | "audio" | "edi
 const modified = (event: AegisubHotkeyEvent): boolean => !!(event.ctrlKey || event.metaKey);
 const plain = (event: AegisubHotkeyEvent): boolean => !modified(event) && !event.altKey;
 
-/** Keypad bindings in the upstream "Always" context and Medusa-mode audio overrides. */
+/** Only "Always" bindings override a focused control, and only with Medusa enabled. */
 export function resolveAegisubOverrideHotkey(event: AegisubHotkeyEvent, medusa: boolean): string | undefined {
   const code = event.code ?? "";
-  const key = event.key.toLowerCase();
   if (modified(event) && !event.altKey && !event.shiftKey && code === "NumpadMultiply") return "app/toggle/global_hotkeys";
-
+  if (!medusa) return undefined;
   if (plain(event)) {
     const always: Record<string, string> = {
       NumpadEnter: "audio/commit",
@@ -34,8 +33,12 @@ export function resolveAegisubOverrideHotkey(event: AegisubHotkeyEvent, medusa: 
     };
     if (!event.shiftKey && always[code]) return always[code];
   }
-  if (!medusa) return undefined;
+  return undefined;
+}
 
+function resolveAudioHotkey(event: AegisubHotkeyEvent): string | undefined {
+  const code = event.code ?? "";
+  const key = event.key.toLowerCase();
   if (modified(event) && event.shiftKey && !event.altKey) {
     if (event.key === "ArrowUp") return "audio/playback/speed/increase";
     if (event.key === "ArrowDown") return "audio/playback/speed/decrease";
@@ -45,7 +48,7 @@ export function resolveAegisubOverrideHotkey(event: AegisubHotkeyEvent, medusa: 
   if (code === "NumpadSubtract") return event.shiftKey ? "time/length/decrease/shift" : "time/length/decrease";
   if (event.shiftKey && key === "g") return "audio/commit/default";
   if (event.shiftKey) return undefined;
-  const medusaKeys: Record<string, string> = {
+  const audioKeys: Record<string, string> = {
     enter: "audio/commit", g: "audio/commit", r: "audio/play/line", s: "audio/play/selection",
     " ": "audio/play/selection", w: "audio/play/selection/after", q: "audio/play/selection/before",
     e: "audio/play/selection/begin", d: "audio/play/selection/end", t: "audio/play/to_end",
@@ -53,7 +56,7 @@ export function resolveAegisubOverrideHotkey(event: AegisubHotkeyEvent, medusa: 
     c: "time/lead/in", v: "time/lead/out", arrowright: "time/next", x: "time/next",
     arrowleft: "time/prev", z: "time/prev",
   };
-  return medusaKeys[key];
+  return audioKeys[key];
 }
 
 /** Default-context shortcuts from the pinned upstream default_hotkey.json. */
@@ -110,7 +113,7 @@ export function resolveAegisubContextHotkey(
   event: AegisubHotkeyEvent,
   context: AegisubHotkeyContext,
 ): string | undefined {
-  if (context === "audio") return resolveAegisubOverrideHotkey(event, true);
+  if (context === "audio") return resolveAudioHotkey(event);
 
   const key = event.key.toLowerCase();
   const mod = modified(event);

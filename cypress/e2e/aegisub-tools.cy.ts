@@ -232,10 +232,10 @@ describe("upstream command compatibility", () => {
       window.localStorage.setItem("aegisub-web.global-hotkeys", "false");
       expect((window as unknown as { subHandle: Handle }).subHandle.runAegisubCommand("app/toggle/global_hotkeys")).to.equal(true);
     });
-    cy.get(".se-root").trigger("keydown", { key: "x", code: "KeyX" });
+    cy.get(".se-root").trigger("keydown", { key: "2", code: "Numpad2" });
     cy.get(".se-row").eq(1).should("have.class", "sel");
     handle().then((editor) => editor.runAegisubCommand("app/toggle/global_hotkeys"));
-    cy.get(".se-root").trigger("keydown", { key: "x", code: "KeyX" });
+    cy.get(".se-root").trigger("keydown", { key: "2", code: "Numpad2" });
     cy.get(".se-row").eq(1).should("have.class", "sel");
   });
 

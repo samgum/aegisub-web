@@ -109,7 +109,12 @@ const BROWSER_REPLACEMENTS = new Set<string>([
   "am/reload", "am/reload/autoload", "am/manager", "am/meta",
 ]);
 
-const PARTIAL_COMMANDS = new Set<string>();
+// A routed button is not evidence of desktop-equivalent behavior. These workflows have
+// known gaps or have not passed source-to-browser end-to-end comparison yet.
+const PARTIAL_COMMANDS = new Set<string>(UPSTREAM_AEGISUB_COMMANDS.filter(command =>
+  command.startsWith("audio/") || command.startsWith("video/") || command.startsWith("time/") ||
+  command.startsWith("am/") || command.startsWith("tool/") || command.startsWith("keyframe/") || command.startsWith("timecode/"),
+));
 
 export function aegisubCommandStatus(command: string): CommandParityStatus {
   if (PARTIAL_COMMANDS.has(command)) return "partial";

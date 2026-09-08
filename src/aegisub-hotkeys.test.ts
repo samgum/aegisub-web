@@ -12,17 +12,26 @@ describe("upstream hotkey contexts", () => {
     expect(resolveAegisubDefaultHotkey({ key: "S", metaKey: true, shiftKey: true })).toBe("subtitle/save/as");
   });
 
-  it("keeps keypad-always commands available without Medusa mode", () => {
-    expect(resolveAegisubOverrideHotkey({ key: "Enter", code: "NumpadEnter" }, false)).toBe("audio/commit");
-    expect(resolveAegisubOverrideHotkey({ key: "2", code: "Numpad2" }, false)).toBe("time/next");
+  it("gates Always keypad bindings on Medusa, preserving normal edit-box Enter", () => {
+    expect(resolveAegisubOverrideHotkey({ key: "Enter", code: "NumpadEnter" }, false)).toBeUndefined();
+    expect(resolveAegisubOverrideHotkey({ key: "2", code: "Numpad2" }, false)).toBeUndefined();
+    expect(resolveAegisubOverrideHotkey({ key: "Enter", code: "NumpadEnter" }, true)).toBe("audio/commit");
+    expect(resolveAegisubContextHotkey({ key: "Enter", code: "NumpadEnter" }, "edit-box")).toBe("grid/line/next/create");
     expect(resolveAegisubOverrideHotkey({ key: "*", code: "NumpadMultiply", ctrlKey: true }, false)).toBe("app/toggle/global_hotkeys");
   });
 
-  it("enables and disables Medusa letter overrides", () => {
+  it("never treats Audio letters as Always overrides", () => {
     expect(resolveAegisubOverrideHotkey({ key: "g" }, false)).toBeUndefined();
-    expect(resolveAegisubOverrideHotkey({ key: "g" }, true)).toBe("audio/commit");
-    expect(resolveAegisubOverrideHotkey({ key: "G", shiftKey: true }, true)).toBe("audio/commit/default");
-    expect(resolveAegisubOverrideHotkey({ key: "ArrowUp", ctrlKey: true, shiftKey: true }, true)).toBe("audio/playback/speed/increase");
+    expect(resolveAegisubOverrideHotkey({ key: "g" }, true)).toBeUndefined();
+    expect(resolveAegisubContextHotkey({ key: "G", shiftKey: true }, "audio")).toBe("audio/commit/default");
+    expect(resolveAegisubContextHotkey({ key: "ArrowUp", ctrlKey: true, shiftKey: true }, "audio")).toBe("audio/playback/speed/increase");
+    for (const key of ["s", "d", "f", "g"]) {
+      expect(resolveAegisubContextHotkey({ key }, "edit-box")).toBeUndefined();
+      expect(resolveAegisubContextHotkey({ key }, "grid")).toBeUndefined();
+      expect(resolveAegisubOverrideHotkey({ key }, true)).toBeUndefined();
+      expect(resolveAegisubContextHotkey({ key }, "audio")).toMatch(/^audio\//);
+      expect(resolveAegisubContextHotkey({ key }, "video")).toMatch(/^video\/tool\//);
+    }
   });
 
   it("maps the upstream subtitle-grid and video contexts", () => {

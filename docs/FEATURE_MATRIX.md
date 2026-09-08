@@ -7,35 +7,35 @@ not expose.
 
 | Area | Desktop capability | Aegisub Web implementation | Status |
 |---|---|---|---|
-| Interface | Native menu, toolbar artwork, video/audio/editor/grid hierarchy | Original Aegisub application and toolbar assets; native-density desktop arrangement | High fidelity |
-| Project | New/open/save, BOM/EOL preservation, crash recovery | Local file picker/download, byte-faithful model, IndexedDB autosave | Complete |
-| Formats | ASS/SSA, SRT and common subtitle formats | 18 editable formats plus EBU STL, Encore, TranStation, SSA and plain-text export/import | Complete |
-| Grid | Cue list, multi-select, comments, actor, effect, margins, layer | Native upstream column order, dynamic empty columns, 9pt-density rows, upstream colours and literal `\N` | Complete |
-| Editing | Undo/redo, add/delete, duplicate, split/merge, copy/paste | Exact-time block duplicate, local history and command API | Complete |
-| Search | Find/replace and next/previous | Live find bar and replace-all | Complete |
-| QA | CPS, duration, overlap, long-line warnings | CPS/duration checks, problem panel, estimated rendered overflow | Web equivalent |
-| Styles | Style manager/editor and script properties | Full ASS style fields, duplicate/delete, PlayRes/wrap properties, embedded fonts and bundled Source Han CN preview fallbacks | Complete |
-| Overrides | Bold/italic/underline, colours, font, transforms, fade | ASS override toolbar and transform panels | Complete |
-| Visual typesetting | Position/move, origin, clip/iclip, drawing | Interactive preview overlays and vector editor | Complete |
-| Karaoke | Syllable timing and `\k`/`\kf` authoring | Waveform karaoke editor with distributed timing | Complete |
-| Video | Local preview, seek, subtitle overlay | Frame-synchronised libass effects, custom controls without browser chrome; fit/aspect, pointer-centred wheel/trackpad and touch-pinch zoom, frame capture, vector clip, overscan, PiP and configured blank video | Web equivalent |
+| Interface | Native menu, toolbar artwork, video/audio/editor/grid hierarchy | Original Aegisub application and toolbar assets; native-density desktop arrangement | Visual/workflow comparison pending |
+| Project | New/open/save, BOM/EOL preservation, crash recovery | Local file picker/download, byte-faithful model, IndexedDB autosave | Implemented; desktop comparison pending |
+| Formats | ASS/SSA, SRT and common subtitle formats | 18 editable formats plus EBU STL, Encore, TranStation, SSA and plain-text export/import | Implemented; desktop comparison pending |
+| Grid | Cue list, multi-select, comments, actor, effect, margins, layer | Native upstream column order, dynamic empty columns, 9pt-density rows, upstream colours and literal `\N` | Implemented; desktop comparison pending |
+| Editing | Undo/redo, add/delete, duplicate, split/merge, copy/paste | Exact-time block duplicate, local history and command API | Implemented; desktop comparison pending |
+| Search | Find/replace and next/previous | Live find bar and replace-all | Implemented; desktop comparison pending |
+| QA | CPS, duration, overlap, long-line warnings | CPS/duration checks, problem panel, estimated rendered overflow | Partial / comparison pending |
+| Styles | Style manager/editor and script properties | Full ASS style fields, duplicate/delete, PlayRes/wrap properties, embedded fonts and bundled Source Han CN preview fallbacks | Implemented; desktop comparison pending |
+| Overrides | Bold/italic/underline, colours, font, transforms, fade | ASS override toolbar and transform panels | Implemented; desktop comparison pending |
+| Visual typesetting | Position/move, origin, clip/iclip, drawing | Interactive preview overlays and vector editor | Implemented; desktop comparison pending |
+| Karaoke | Syllable timing and `\k`/`\kf` authoring | Waveform karaoke editor with distributed timing | Implemented; desktop comparison pending |
+| Video | Local preview, seek, subtitle overlay | Frame-synchronised libass effects, custom controls without browser chrome; fit/aspect, pointer-centred wheel/trackpad and touch-pinch zoom, frame capture, vector clip, overscan, PiP and configured blank video | Partial / comparison pending |
 | HDR | HDR/BT.2020/Dolby Vision preview | Browser/OS hardware decode and tone mapping; no RPU reference pipeline | Browser dependent |
-| Audio | Waveform, spectrum, playback, clips, speed | WAV/FLAC/Opus/Vorbis/MP3/AAC/M4A/ALAC/AIFF/CAF, left-start/right-end waveform timing, Worker FFT, WAV clips and pitch-preserving 0.25×–4× speed | Web equivalent |
-| Large media | Multi-GB files | Disk-backed playback/output; memory-heavy scans disabled above a device-aware limit | Complete safe path |
-| Timing | Mark in/out, shift, overlaps, drag/resize | Selection stops playback and seeks to line start; keyboard/playhead tools and native left/right audio markers | Complete |
-| Timing processor | Lead/gap/duration cleanup | Style/selection filters, collision-safe leads, biased continuity and asymmetric keyframe thresholds | Complete |
-| Keyframes/timecodes | Load, save and snap to scenes | Aegisub keyframes v1 and timecodes v1/v2, recent lists, VFR frame shifts and export | Web equivalent |
-| Resample | Script/video resolution handling | Stretch/add-border/remove-border modes, PlayRes/style/margin/position/move/clip scaling and mismatch dialog | Complete |
-| Text cleanup | CJK punctuation and whitespace cleanup | Tag-preserving SGMY cleanup port | Complete |
-| Chinese conversion | Simplified ↔ Traditional | Bundled OpenCC phrase dictionaries, no runtime dictionary fetch | Complete |
-| Pair check | Quotes/brackets pairing | ASCII/CJK pair scanner with clickable cue results | Complete |
-| Furigana | SGMY Japanese ruby annotation | User-editable reading map generates independently movable, positioned libass events | Web equivalent |
-| Lyrics scroll | SGMY music-player scroll generator | Resolution/style/context controls and animated stacked ASS events | Complete |
-| Spellcheck | Hunspell dictionaries and correction dialog | nspell window, suggestions/actions, bundled English, personal/custom Hunspell dictionaries | Complete |
-| Translation | Translation assistant | Manual line assistant plus M2M-100/NLLB track translation with tag preservation | Complete |
+| Audio | Waveform, spectrum, playback, clips, speed | WAV/FLAC/Opus/Vorbis/MP3/AAC/M4A/ALAC/AIFF/CAF, left-start/right-end waveform timing, Worker FFT, WAV clips and pitch-preserving 0.25×–4× speed | Partial / comparison pending |
+| Large media | Multi-GB files | Disk-backed playback/output; memory-heavy scans disabled above a device-aware limit | Partial: full-file scans skipped |
+| Timing | Mark in/out, shift, overlaps, drag/resize | Selection stops playback and seeks to line start; keyboard/playhead tools and native left/right audio markers | Implemented; desktop comparison pending |
+| Timing processor | Lead/gap/duration cleanup | Style/selection filters, collision-safe leads, biased continuity and asymmetric keyframe thresholds | Implemented; desktop comparison pending |
+| Keyframes/timecodes | Load, save and snap to scenes | Aegisub keyframes v1 and timecodes v1/v2, recent lists, VFR frame shifts and export | Partial / comparison pending |
+| Resample | Script/video resolution handling | Stretch/add-border/remove-border modes, PlayRes/style/margin/position/move/clip scaling and mismatch dialog | Implemented; desktop comparison pending |
+| Text cleanup | CJK punctuation and whitespace cleanup | Tag-preserving SGMY cleanup port | Implemented; desktop comparison pending |
+| Chinese conversion | Simplified ↔ Traditional | Bundled OpenCC phrase dictionaries, no runtime dictionary fetch | Implemented; desktop comparison pending |
+| Pair check | Quotes/brackets pairing | ASCII/CJK pair scanner with clickable cue results | Implemented; desktop comparison pending |
+| Furigana | SGMY Japanese ruby annotation | User-editable reading map generates independently movable, positioned libass events | Partial / comparison pending |
+| Lyrics scroll | SGMY music-player scroll generator | Resolution/style/context controls and animated stacked ASS events | Implemented; desktop comparison pending |
+| Spellcheck | Hunspell dictionaries and correction dialog | nspell window, suggestions/actions, bundled English, personal/custom Hunspell dictionaries | Implemented; desktop comparison pending |
+| Translation | Translation assistant | Manual line assistant plus M2M-100/NLLB track translation with tag preservation | Implemented; desktop comparison pending |
 | Transcription | External/manual workflow | Whisper transcription with WebGPU/CPU fallback | Added capability |
-| Attachments/fonts | ASS font attachments and font collector | Embedded/collected bytes are passed to live libass; missing-font action uses local access or upload fallback | Web equivalent |
-| Export/mux | Subtitle export/filter/container workflow | Ordered cleanup/timing/resample filters, editable formats, EBU STL legacy tables, Encore/TranStation/SSA/text and streamed MKV/MP4 mux | Complete |
+| Attachments/fonts | ASS font attachments and font collector | Embedded/collected bytes are passed to live libass; missing-font action uses local access or upload fallback | Partial / comparison pending |
+| Export/mux | Subtitle export/filter/container workflow | Ordered cleanup/timing/resample filters, editable formats, EBU STL legacy tables, Encore/TranStation/SSA/text and streamed MKV/MP4 mux | Implemented; desktop comparison pending |
 | Automation 4 | LuaJIT macros/modules | Fengari Lua macro API and local/autoload registry; JavaScript Worker bridge for web-native extensions | Browser replacement |
 | Native plugins | VSFilter, VapourSynth, Avisynth, DirectShow | libass/WASM/WebCodecs/media remux paths | Browser replacement |
 | Collaboration | Not standard desktop Aegisub | Host API for remote cue/document fields and peer cursors | Added capability |
