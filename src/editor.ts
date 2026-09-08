@@ -93,7 +93,8 @@ import { openKanjiTimer } from "./kanji-timer";
 import { getAIAnalysisSettings, openAIAnalysis, openAIAnalysisSettings } from "./ai-analysis";
 import { openSpellchecker } from "./spellchecker";
 import { openResolutionMismatchDialog, openVideoDetails } from "./video-details";
-import { parseEmbeddedFonts } from "./fonts";
+import { parseEmbeddedFonts, type EmbeddedFont } from "./fonts";
+import { requestedFontFamilies, bundledFontFilename, bundledPreviewFonts, fontBytesFingerprint, matchingLocalFonts } from "./preview-fonts";
 
 export interface SubtitleInput {
   text: string;
@@ -337,6 +338,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private timingDraft = new TimingDraft();
   private embeddedFontUrls: string[] = [];
   private embeddedFontSignature = "";
+  private bundledFontSignature = "";
+  private previewFontFaces = new Set<FontFace>();
+  private previewFontGeneration = 0;
+  private knownEmbeddedFontFamilies = new Set<string>();
   private fontWarningEl: HTMLDivElement | null = null;
   private gridColumns: GridColumnKey[] = [];
   private cueClipboard: Cue[] = []; // internal copy/paste buffer
@@ -3513,76 +3518,60 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   // --- media preview -------------------------------------------------------
 
-  private currentEmbeddedFontSignature(doc: SubtitleDoc = this.doc): string {
+  private currentEmbeddedFontSignature(doc: SubtitleDoc = this.doc, fonts?: EmbeddedFont[]): string {
     if (doc.format !== "ass") return "";
-    const raw = serializeSubtitles(doc);
-    return parseEmbeddedFonts(raw).map((font) => `${font.filename}:${font.bytes.byteLength}`).join("|");
+    return JSON.stringify({ embedded: (fonts ?? parseEmbeddedFonts(serializeSubtitles(doc))).map(font => `${font.filename}:${fontBytesFingerprint(font.bytes)}`), bundled: bundledPreviewFonts(doc) });
   }
 
   private releaseEmbeddedFontUrls(): void {
+    this.previewFontGeneration++;
+    for (const face of this.previewFontFaces) document.fonts.delete(face);
+    this.previewFontFaces.clear();
+    this.knownEmbeddedFontFamilies.clear();
+    this.bundledFontSignature = "";
     for (const url of this.embeddedFontUrls) URL.revokeObjectURL(url);
     this.embeddedFontUrls = [];
     this.root.dataset.previewFonts = "0";
     this.root.dataset.bundledPreviewFonts = "0";
   }
 
-  private bundledFontFilename(family: string): string | null {
-    const name = family.trim().toLowerCase().replace(/[\s_-]+/g, " ");
-    if (name.includes("source han sans cn") || name.includes("思源黑体")) {
-      if (name.includes("heavy") || name.includes("特粗")) return "SourceHanSansCN-Heavy.otf";
-      if (name.includes("medium") || name.includes("中等")) return "SourceHanSansCN-Medium.otf";
-      return "SourceHanSansCN-Regular.otf";
-    }
-    if ((name.includes("source han serif cn") || name.includes("思源宋体")) && (name.includes("heavy") || name.includes("特粗"))) {
-      return "SourceHanSerifCN-Heavy.otf";
-    }
-    return null;
-  }
-
   private bundledPreviewFontUrls(): string[] {
-    if (this.doc.format !== "ass") return [];
-    const files = new Set<string>();
-    const cjk = /[\u2e80-\u2eff\u3000-\u30ff\u31c0-\u31ef\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
-    if (this.doc.cues.some((cue) => cjk.test(cue.text))) files.add("SourceHanSansCN-Regular.otf");
-    for (const style of this.doc.styles ?? []) {
-      const filename = this.bundledFontFilename(style.fields.Fontname ?? "");
-      if (filename) files.add(filename);
-    }
-    return [...files].map((filename) => new URL(`octopus/${filename}`, document.baseURI).toString());
+    return bundledPreviewFonts(this.doc).map(filename => new URL(`octopus/${filename}`, document.baseURI).toString());
   }
 
   private prepareEmbeddedFontUrls(): string[] {
     this.releaseEmbeddedFontUrls();
+    const fonts = this.doc.format === "ass" ? parseEmbeddedFonts(serializeSubtitles(this.doc)) : [];
+    this.bundledFontSignature = JSON.stringify(bundledPreviewFonts(this.doc));
+    this.embeddedFontSignature = this.currentEmbeddedFontSignature(this.doc, fonts);
     if (this.doc.format !== "ass") return [];
-    for (const font of parseEmbeddedFonts(serializeSubtitles(this.doc))) {
+    const generation = this.previewFontGeneration;
+    for (const font of fonts) {
       if (!font.bytes.length) continue;
       const url = URL.createObjectURL(new Blob([font.bytes as BlobPart], { type: font.mime }));
       this.embeddedFontUrls.push(url);
       const family = font.family || font.filename.replace(/(?:_\d+)?\.[^.]+$/i, "");
+      if (family) this.knownEmbeddedFontFamilies.add(family.trim().toLowerCase());
+      for (const name of font.names ?? []) this.knownEmbeddedFontFamilies.add(name.trim().toLowerCase());
       if (family && typeof FontFace !== "undefined") {
-        const face = new FontFace(family, `url(${JSON.stringify(url)})`);
-        void face.load().then((loaded) => document.fonts.add(loaded)).catch(() => undefined);
+        try {
+          const face = new FontFace(family, `url(${JSON.stringify(url)})`);
+          this.previewFontFaces.add(face);
+          void face.load().then(loaded => { if (generation === this.previewFontGeneration) document.fonts.add(loaded); }).catch(() => undefined);
+        } catch { /* A malformed CSS family name must not prevent libass/video loading. */ }
       }
     }
-    this.embeddedFontSignature = this.currentEmbeddedFontSignature();
     this.root.dataset.previewFonts = String(this.embeddedFontUrls.length);
     const bundled = this.bundledPreviewFontUrls();
+    this.bundledFontSignature = JSON.stringify(bundledPreviewFonts(this.doc));
     this.root.dataset.bundledPreviewFonts = String(bundled.length);
     return [...this.embeddedFontUrls, ...bundled];
   }
 
   private missingFontFamilies(): string[] {
     if (this.doc.format !== "ass") return [];
-    const raw = serializeSubtitles(this.doc);
-    const embedded = new Set(parseEmbeddedFonts(raw).map((font) =>
-      (font.family || font.filename.replace(/(?:_\d+)?\.[^.]+$/i, "")).trim().toLowerCase(),
-    ));
-    const missing = new Set<string>();
-    for (const style of this.doc.styles ?? []) {
-      const family = (style.fields.Fontname ?? "").trim();
-      if (family && !embedded.has(family.toLowerCase()) && !this.bundledFontFilename(family)) missing.add(family);
-    }
-    return [...missing];
+    return requestedFontFamilies(this.doc).filter(family =>
+      !this.knownEmbeddedFontFamilies.has(family.toLowerCase()) && !bundledFontFilename(family));
   }
 
   private updateFontWarning(): void {
@@ -3609,15 +3598,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
       return;
     }
     try {
-      const wanted = new Set(families.map((family) => family.toLowerCase()));
       const available = await query.call(window);
-      const unique = new Map<string, LocalFontData>();
-      for (const font of available) {
-        if (wanted.has(font.family.trim().toLowerCase())) unique.set(font.postscriptName || font.fullName, font);
-      }
       let doc = this.doc;
       let count = 0;
-      for (const font of unique.values()) {
+      for (const font of matchingLocalFonts(available, families)) {
         const blob = await font.blob();
         const name = `${(font.postscriptName || font.fullName).replace(/[^\p{L}\p{N}_.-]+/gu, "_")}.ttf`;
         doc = embedAssAttachment(doc, name, new Uint8Array(await blob.arrayBuffer()), "font");
@@ -3924,6 +3908,11 @@ class SubtitleEditor implements SubtitleEditorHandle {
   // Feed the current (serialized) document to the preview so it renders the live edits.
   private pushSubtitles(immediate = false): void {
     if (!this.player) return;
+    if (this.video && this.mediaFile && JSON.stringify(bundledPreviewFonts(this.doc)) !== this.bundledFontSignature) {
+      this.reloadMediaPreservingState(false);
+      return;
+    }
+    this.updateFontWarning();
     window.clearTimeout(this.subtitleTimer);
     const send = () => this.player?.setSubtitleText(serializeSubtitles(this.doc), `subtitles.${this.doc.format}`);
     if (immediate) send();

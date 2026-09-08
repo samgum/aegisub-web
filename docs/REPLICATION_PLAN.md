@@ -67,6 +67,21 @@ browser cases in three profiles (22 explicitly skipped). Native perspective guid
 move/clip control-point fidelity, origin multi-selection and physical touch acceptance remain
 unfinished; these tools are not marked full parity.
 
+Third increment `58b379a` passed all nine CI jobs ([34181389242](https://github.com/samgum/aegisub-web/actions/runs/34181389242))
+and was fast-forwarded to the public main branch. Font lifecycle work now underway fixes
+late Chinese/inline-font introduction, fingerprints font bytes rather than filename/size,
+recognizes embedded family/full/PostScript aliases, and removes owned FontFace objects on
+preview disposal. Missing unbundled weights remain explicitly missing, not Regular aliases.
+
+Pages deployment [34181614869](https://github.com/samgum/aegisub-web/actions/runs/34181614869)
+published the on-frame tools. A fresh browser on the public site then dragged G and verified
+saved `fscx150`/`fscy125` tags. Font regressions now also verify a real embedded WOFF2
+FontFace is removed on video close, inline Medium loads after an English-only video, and
+unsupported Bold remains identified as missing. The embedded decoder uses a preallocated
+byte buffer and a single decode per preview initialization. Local-font collection matches
+full/PostScript names as well as families. These tests do not claim exact glyph identity
+for arbitrary unavailable fonts or all font collections.
+
 ## Remaining implementation and verification
 
 1. Transport: verify the new frame index/seek path against decoded frame images and native

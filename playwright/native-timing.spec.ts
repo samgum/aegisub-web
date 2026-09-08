@@ -124,8 +124,11 @@ test("video and audio survive independent replacement, closing, and subtitle loa
   expect(await video.evaluate((v: HTMLVideoElement) => v.currentSrc)).toBe(src);
   await page.locator("#file").setInputFiles("test-corpus/base.ass");
   expect(await video.evaluate((v: HTMLVideoElement) => v.currentSrc)).toBe(src);
+  await video.evaluate(v => { (window as any).__closedVideo = v; });
   await command(page, "video/close");
   await expect(video).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__closedVideo.networkState)).toBe(0);
+  expect(await page.evaluate(async url => { try { return (await fetch(url)).ok; } catch { return false; } }, src)).toBe(false);
   await expect(audio).toHaveCount(1);
   await page.locator("#media-file").setInputFiles("test-corpus/tiny-timing.mp4");
   await expect(video).toHaveCount(1);

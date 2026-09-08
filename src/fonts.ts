@@ -6,6 +6,8 @@
 export interface EmbeddedFont {
   filename: string;
   family: string | null;
+  /** Family, full and PostScript names available to the subtitle renderer. */
+  names?: string[];
   /** Decoded font bytes, ready for FontFace/libass rather than merely inventory display. */
   bytes: Uint8Array;
   mime: string;
@@ -14,20 +16,22 @@ export interface EmbeddedFont {
 // Decode VSFilter-embedded font data (a run of encoded lines) to bytes.
 function uudecode(encoded: string): Uint8Array {
   const chars = encoded.replace(/[^\x21-\x60]/g, ""); // keep only the 33..96 alphabet
-  const out: number[] = [];
+  const out = new Uint8Array(Math.floor(chars.length * 3 / 4));
+  let position = 0;
   for (let i = 0; i < chars.length; i += 4) {
-    const v = [0, 0, 0, 0].map((_, k) => (i + k < chars.length ? chars.charCodeAt(i + k) - 33 : -1));
     const n = Math.min(4, chars.length - i);
-    if (n >= 2) out.push(((v[0] << 2) | (v[1] >> 4)) & 0xff);
-    if (n >= 3) out.push(((v[1] << 4) | (v[2] >> 2)) & 0xff);
-    if (n >= 4) out.push(((v[2] << 6) | v[3]) & 0xff);
+    const a = chars.charCodeAt(i) - 33, b = chars.charCodeAt(i + 1) - 33;
+    const c = chars.charCodeAt(i + 2) - 33, d = chars.charCodeAt(i + 3) - 33;
+    if (n >= 2) out[position++] = (a << 2) | (b >> 4);
+    if (n >= 3) out[position++] = (b << 4) | (c >> 2);
+    if (n >= 4) out[position++] = (c << 6) | d;
   }
-  return new Uint8Array(out);
+  return out;
 }
 
 // Read the family (name ID 1) or full name (4) from a sfnt/TTC font binary. Prefers the
 // Windows platform record. Returns null on any structural problem.
-function fontFamily(bytes: Uint8Array): string | null {
+function fontNames(bytes: Uint8Array): { family: string | null; names: string[] } {
   try {
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const u16 = (o: number) => dv.getUint16(o);
@@ -43,33 +47,35 @@ function fontFamily(bytes: Uint8Array): string | null {
         break;
       }
     }
-    if (nameOff < 0) return null;
+    if (nameOff < 0) return { family: null, names: [] };
     const count = u16(nameOff + 2);
     const storage = nameOff + u16(nameOff + 4);
     let best: string | null = null;
     let bestScore = -1;
+    const names = new Set<string>();
     for (let i = 0; i < count; i++) {
       const rec = nameOff + 6 + i * 12;
       const platformID = u16(rec);
       const nameID = u16(rec + 6);
       const len = u16(rec + 8);
       const off = storage + u16(rec + 10);
-      if (nameID !== 1 && nameID !== 4) continue;
+      if (![1, 4, 6, 16].includes(nameID)) continue;
       let s = "";
       if (platformID === 3 || platformID === 0) {
         for (let j = 0; j + 1 < len; j += 2) s += String.fromCharCode(u16(off + j)); // UTF-16BE
       } else {
         for (let j = 0; j < len; j++) s += String.fromCharCode(bytes[off + j]); // Mac/ASCII
       }
-      const score = (nameID === 1 ? 2 : 0) + (platformID === 3 ? 1 : 0);
+      if (s.trim()) names.add(s.trim());
+      const score = (nameID === 1 ? 4 : nameID === 16 ? 2 : 0) + (platformID === 3 ? 1 : 0);
       if (s.trim() && score > bestScore) {
         best = s.trim();
         bestScore = score;
       }
     }
-    return best;
+    return { family: best, names: [...names] };
   } catch {
-    return null;
+    return { family: null, names: [] };
   }
 }
 
@@ -82,10 +88,10 @@ export function parseEmbeddedFonts(raw: string): EmbeddedFont[] {
   const flush = () => {
     if (!current) return;
     const bytes = current.data.length ? uudecode(current.data.join("")) : new Uint8Array(0);
-    const family = bytes.length ? fontFamily(bytes) : null;
+    const { family, names } = bytes.length ? fontNames(bytes) : { family: null, names: [] };
     const ext = current.filename.split(".").pop()?.toLowerCase();
     const mime = ext === "otf" ? "font/otf" : ext === "woff" ? "font/woff" : ext === "woff2" ? "font/woff2" : "font/ttf";
-    fonts.push({ filename: current.filename, family, bytes, mime });
+    fonts.push({ filename: current.filename, family, names, bytes, mime });
     current = null;
   };
   for (const line of lines) {

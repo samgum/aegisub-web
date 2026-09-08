@@ -51,8 +51,18 @@ describe("embedded font name decoding", () => {
     const fonts = parseEmbeddedFonts(raw);
     expect(fonts).toHaveLength(1);
     expect(fonts[0].family).toBe("Test Family");
+    expect(fonts[0].names).toContain("Test Family");
     expect(fonts[0].bytes).toEqual(makeFont("Test Family"));
     expect(fonts[0].mime).toBe("font/ttf");
+  });
+
+  it("recognizes PostScript and typographic name records used by ASS font overrides", () => {
+    for (const nameId of [4, 6, 16]) {
+      const bytes = makeFont("TestFont-Medium");
+      new DataView(bytes.buffer).setUint16(28 + 12, nameId);
+      const raw = `[Fonts]\nfontname: test.ttf\n${uuencode(bytes)}\n[Events]`;
+      expect(parseEmbeddedFonts(raw)[0].names).toContain("TestFont-Medium");
+    }
   });
 
   it("falls back to null family for undecodable data (caller uses the filename)", () => {
