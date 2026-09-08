@@ -103,8 +103,23 @@ test("file audio uses actual Web Audio gain and releases its output nodes", asyn
   await page.getByRole("button", { name: "联动波形增益与音量", exact: true }).click(); await slider(page, "音频音量", 25);
   await page.locator(".se-audio-controls").getByRole("button", { name: "播放当前行", exact: true }).click(); await command(page, "audio/play/to_end");
   const rms = () => page.evaluate(() => { const audio = (window as any).subHandle.audio; return audio.output.level(audio.element); });
-  await expect.poll(rms).toBeGreaterThan(.002); const quiet = await rms();
-  await slider(page, "音频音量", 50); await expect.poll(rms).toBeGreaterThan(.02); const normal = await rms();
+  const reference = 1600 / 32768 / Math.sqrt(2);
+  const steadySignal = async (expected: number) => {
+    let stable = 0, observed = 0; const samples: number[] = [];
+    try {
+      // A newly-started analyser contains a partly silent window. Require three complete
+      // windows at the fixture's known amplitude, not one threshold crossing followed by
+      // a different read. This also detects a wrong absolute gain, not just a ratio.
+      await expect.poll(async () => {
+        observed = await rms(); samples.push(observed);
+        stable = Math.abs(observed - expected) <= expected * .04 ? stable + 1 : 0;
+        return stable;
+      }, { intervals: [60, 60, 60, 100] }).toBeGreaterThanOrEqual(3);
+      return observed;
+    } finally { await info.attach(`signal-${expected.toFixed(5)}`, { body: JSON.stringify({ expected, samples }), contentType: "application/json" }); }
+  };
+  const quiet = await steadySignal(reference / 8);
+  await slider(page, "音频音量", 50); const normal = await steadySignal(reference);
   expect(normal / quiet).toBeGreaterThan(6); expect(normal / quiet).toBeLessThan(10);
   await info.attach("native-file-gain", { body: JSON.stringify({ quiet, normal, ratio: normal / quiet }), contentType: "application/json" });
   await command(page, "audio/close"); expect(await page.evaluate(() => (window as any).subHandle.audio.output.active.size)).toBe(0);
