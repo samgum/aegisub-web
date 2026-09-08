@@ -77,6 +77,16 @@ test("linked amplitude and volume change the actual generated audio signal", asy
   await info.attach("actual-gain", { body: JSON.stringify({ original, quiet, restored: await rms() }), contentType: "application/json" });
 });
 
+test("audio sliders keep their arrow keys and do not swallow S/F timing hotkeys", async ({ page }) => {
+  const zoom = page.getByRole("slider", { name: "音频横向缩放", exact: true }); await zoom.focus(); await zoom.press("ArrowUp");
+  await expect(zoom).toHaveValue("1"); expect((await saved(page)).startMs).toBe(1000);
+  await zoom.press("s"); await expect(page.locator(".se-root")).toHaveAttribute("data-audio-playing", "true");
+  await command(page, "audio/stop");
+  const before = await page.evaluate(() => (window as any).subHandle.timeline.scrollSec);
+  await zoom.press("f");
+  expect(await page.evaluate(before => ((window as any).subHandle.timeline.scrollSec - before) * (window as any).subHandle.timeline.pxPerSec, before)).toBeCloseTo(128, 4);
+});
+
 test("keyframes and video frame edges snap at native frame midpoints; middle drag seeks video", async ({ page }, info) => {
   test.skip(/android|ipad|iphone/.test(info.project.name), "desktop frame marker mouse workflow");
   await page.locator("#media-file").setInputFiles("test-corpus/tiny-timing.mp4");

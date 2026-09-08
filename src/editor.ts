@@ -4438,8 +4438,12 @@ class SubtitleEditor implements SubtitleEditorHandle {
     }
 
     const target = e.target instanceof Element ? e.target : this.root;
+    const rangeControl = target instanceof HTMLInputElement && target.type === "range";
+    // A native slider owns navigation keys, but it is not a text editor: S/D/F/G
+    // must continue to reach the Audio context after adjusting a slider.
+    if (rangeControl && /^(ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End|PageUp|PageDown)$/.test(e.key)) return;
     const typing =
-      target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || (target instanceof HTMLElement && target.isContentEditable);
+      (!rangeControl && target.tagName === "INPUT") || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || (target instanceof HTMLElement && target.isContentEditable);
     const alwaysCommand = resolveAegisubOverrideHotkey(e, localStorage.getItem("aegisub-web.global-hotkeys") === "true");
     if (alwaysCommand) {
       e.preventDefault();
