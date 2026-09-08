@@ -64,7 +64,7 @@ test("detail metadata controls retain live cue objects after automatic timing ed
 test("multi-line automatic timing restores the entire selection on undo", async ({ page }, info) => {
   test.skip(/android|ipad|iphone/.test(info.project.name), "desktop extended selection and marker sequence");
   await page.locator('[data-audio-option="audio-autocommit"]').click();
-  await page.locator(".se-row").nth(1).click({ modifiers: ["Control"] });
+  await page.locator(".se-row").nth(1).click({ modifiers: [info.project.name === "macos-webkit" ? "Meta" : "Control"] });
   const selection = await page.evaluate(() => (window as any).subHandle.selectedCueIds()); expect(selection).toHaveLength(2);
   await endClick(page, 5.4); expect((await doc(page)).cues.slice(0, 2).map((cue: any) => cue.endMs)).toEqual([5400, 5400]);
   await command(page, "edit/undo"); expect((await doc(page)).cues.slice(0, 2).map((cue: any) => cue.endMs)).toEqual([3000, 6000]);
