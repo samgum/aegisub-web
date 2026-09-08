@@ -56,6 +56,7 @@ export class Timeline {
   private pal!: Palette;
   private ro: ResizeObserver | null = null;
   private raf = 0;
+  private backdrop = document.createElement("canvas");
   private drag: AudioTimingGesture | null = null;
   private dragOriginal: Cue[] = [];
   private pan: { startX: number; startScroll: number; moved: boolean } | null = null;
@@ -206,10 +207,11 @@ export class Timeline {
 
   // Keep a smooth playhead while the media plays.
   startPlayheadLoop(): void {
-    cancelAnimationFrame(this.raf);
+    if (this.raf) return;
     const tick = () => {
+      const previousScroll = this.scrollSec;
       if (this.cb.followPlayback?.()) this.followPlayhead();
-      this.render();
+      if (previousScroll !== this.scrollSec) this.render(); else this.renderPlayhead();
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
@@ -247,7 +249,6 @@ export class Timeline {
     if (this.audioView === "spectrum" && this.spectrum) this.drawSpectrum();
     else this.drawWaveform();
     this.drawCues();
-    this.drawPlayhead();
 
     ctx.strokeStyle = this.pal.border;
     ctx.lineWidth = 1;
@@ -255,6 +256,16 @@ export class Timeline {
     ctx.moveTo(0, RULER_H + 0.5);
     ctx.lineTo(w, RULER_H + 0.5);
     ctx.stroke();
+    this.backdrop.width = this.canvas.width; this.backdrop.height = this.canvas.height;
+    this.backdrop.getContext("2d")!.drawImage(this.canvas, 0, 0);
+    this.drawPlayhead();
+  }
+
+  renderPlayhead(): void {
+    if (!this.backdrop.width || this.backdrop.width !== this.canvas.width || this.backdrop.height !== this.canvas.height) { this.render(); return; }
+    this.ctx.clearRect(0, 0, this.width, this.height);
+    this.ctx.drawImage(this.backdrop, 0, 0, this.width, this.height);
+    this.drawPlayhead();
   }
 
   private drawRuler(): void {
@@ -305,11 +316,11 @@ export class Timeline {
     const spectrum = this.spectrum;
     if (!spectrum) return;
     const top = RULER_H + 1;
-    const height = this.height - top;
-    const width = Math.max(1, Math.floor(this.width));
+    const height = Math.max(1, Math.round((this.height - top) * this.dpr));
+    const width = Math.max(1, Math.round(this.width * this.dpr));
     const image = this.ctx.createImageData(width, height);
     for (let x = 0; x < width; x += 1) {
-      const time = this.secOf(x);
+      const time = this.secOf(x / this.dpr);
       const column = Math.max(0, Math.min(spectrum.columns - 1, Math.floor(time * spectrum.columnsPerSecond)));
       for (let y = 0; y < height; y += 1) {
         const bin = Math.max(0, Math.min(spectrum.bins - 1, Math.floor((1 - y / height) * spectrum.bins)));
@@ -321,7 +332,7 @@ export class Timeline {
         image.data[offset + 3] = Math.round(35 + value * 190);
       }
     }
-    this.ctx.putImageData(image, 0, top);
+    this.ctx.putImageData(image, 0, Math.round(top * this.dpr));
   }
 
   private cueRect(c: Cue): { x0: number; x1: number } {
@@ -550,6 +561,7 @@ export class Timeline {
     this.ro?.disconnect();
     this.canvas.removeEventListener("contextmenu", this.onContextMenu);
     this.canvas.remove();
+    this.backdrop.width = this.backdrop.height = 0;
   }
 }
 

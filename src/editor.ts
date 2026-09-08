@@ -52,6 +52,8 @@ import { VisualTransformOverlay } from "./visual-transform-overlay";
 import type { VisualTransformMode } from "./visual-transform";
 import { decodeAudioToMono16k, extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
 import { createEmbeddedPlayer } from "./embedded-player";
+import { createNativeVideoPlayer } from "./native-video-player";
+import { extractStreamedWaveform } from "./waveform-extractor";
 import { extractMp4Subtitles } from "./mp4subs";
 import { runTranslate, type TranslateRun } from "./localml/translate";
 import { buildTranslationPlan, applyUniqueTranslation, rebuildCueText, type TranslationPlan } from "./translate-plan";
@@ -782,16 +784,17 @@ class SubtitleEditor implements SubtitleEditorHandle {
     audioHost.hidden = true;
     strip.append(audioHost);
     this.audio = new AudioWorkspace(audioHost, {
-      changed: () => {
+      changed: (reason) => {
         this.root.dataset.audioName = this.audio?.file?.name ?? this.audio?.synthetic?.name ?? "";
         this.root.dataset.audioPlaying = String(this.audio?.playing ?? false);
         this.root.dataset.audioSource = this.audio?.synthetic?.kind ?? (this.audio?.file ? "file" : "");
         if (audioHost.dataset.fallback) this.root.dataset.audioFallback = audioHost.dataset.fallback;
         else delete this.root.dataset.audioFallback;
-        if (this.video) this.video.muted = !!this.audio?.element;
+        if (this.video && this.audio && this.video.muted !== this.audio.muteVideo) this.video.muted = this.audio.muteVideo;
         if (this.audio?.playing) this.timeline?.startPlayheadLoop();
         else this.timeline?.stopPlayheadLoop();
-        this.timeline?.render();
+        if (reason && reason !== "loadedmetadata") this.timeline?.renderPlayhead();
+        else this.timeline?.render();
       },
       error: (message) => { this.setWaveStatus(message); this.toast(`音频：${message}`); },
       progress: (message) => this.setWaveStatus(message),
@@ -814,6 +817,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
     audioButton("button_audio_commit", "提交时间", "audio/commit");
     audioButton("button_audio_goto", "跳到选择", "audio/go_to");
     audioButton("kara_mode", "卡拉 OK", "audio/karaoke");
+    audioButton("zoom_in_button", "放大音频时间轴", "audio/zoom/in");
+    audioButton("zoom_out_button", "缩小音频时间轴", "audio/zoom/out");
     for (const [key, label, defaultOn, icon] of [
       ["audio-autoscroll", "自动滚动到所选字幕", true, "toggle_audio_autoscroll"],
       ["audio-autocommit", "自动提交", false, "toggle_audio_autocommit"],
@@ -2749,11 +2754,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private addStyle(): void {
-    this.doc.styles ??= [];
     const style = makeDefaultStyle(uniqueStyleName(this.doc, "New style"));
-    this.doc.styles.push(style);
-    this.markDirty();
-    this.renderDetail();
     this.openStyleEditor(style);
   }
 
@@ -2762,12 +2763,12 @@ class SubtitleEditor implements SubtitleEditorHandle {
     let style = this.doc.styles.find((s) => s.name === name);
     if (!style) {
       style = makeDefaultStyle(name);
-      this.doc.styles.push(style);
     }
     this.openStyleEditor(style);
   }
 
   private openStyleEditor(style: AssStyle): void {
+    this.video?.pause(); this.audio.stop();
     openStyleEditor(
       {
         getDoc: () => this.doc,
@@ -3714,14 +3715,26 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.scrollAudioSelectionIntoView();
     const blob = this.audio.analysisBlob;
     if (!blob) return;
-    const memoryGb = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
-    if (blob.size > (memoryGb <= 4 ? 192 : 512) * 1024 * 1024) {
-      this.setWaveStatus("音频已加载；大文件波形解码尚不支持分段读取。");
-      return;
-    }
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    if (generation !== this.audioLoadGeneration) return;
-    await this.extractWaveform(bytes);
+    const ac = new AbortController(); this.waveAbort = ac;
+    this.root.dataset.waveformDecoder = "worker-loading";
+    try {
+      const result = await extractStreamedWaveform(blob, ac.signal, ratio => this.setWaveStatus(`${t("extractingWave")} ${Math.round(ratio * 100)}%`));
+      if (ac.signal.aborted || generation !== this.audioLoadGeneration) return;
+      this.wavePeaks = result; this.timeline?.setPeaks(result.peaks, result.peaksPerSec);
+      this.root.dataset.waveformDecoder = "worker-ready"; this.setWaveStatus("");
+    } catch {
+      if (ac.signal.aborted || generation !== this.audioLoadGeneration) return;
+      // Legacy codecs retain the established decoder, but never copy a large video into RAM.
+      if (blob.size <= 64 * 1024 * 1024) {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        if (generation !== this.audioLoadGeneration) return;
+        this.root.dataset.waveformDecoder = "compatibility";
+        await this.extractWaveform(bytes);
+      } else {
+        this.root.dataset.waveformDecoder = "unavailable";
+        this.setWaveStatus("当前编码无法生成波形；可单独打开 WAV / FLAC 音轨继续打轴。");
+      }
+    } finally { if (this.waveAbort === ac) this.waveAbort = null; }
   }
 
   private resetAudioAnalysis(): void {
@@ -3798,7 +3811,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.mediaContainer = /\.(mkv|webm)$/i.test(file.name) || /matroska|webm/i.test(file.type) ? "mkv" : "mp4";
     host.textContent = "";
     const fontUrls = this.prepareEmbeddedFontUrls();
-    this.player = createEmbeddedPlayer(
+    const native = localStorage.getItem("aegisub-web.video-decoder") !== "compatibility" && !/\.(mkv|avi|wmv|flv|ts|m2ts)$/i.test(file.name);
+    this.root.dataset.videoDecoder = native ? "native" : "compatibility";
+    this.player = native ? createNativeVideoPlayer(host, file, fontUrls, message => this.toast(message)) : createEmbeddedPlayer(
       host,
       { blob: file, mime: file.type || "video/mp4", filename: file.name },
       { embedded: true, libass: { fonts: fontUrls }, onError: (message) => this.toast(message) },
@@ -3806,7 +3821,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const v = this.player.getMediaElement() ?? null;
     this.video = v;
     this.audio.bindVideo(v);
-    if (v) v.muted = !!this.audio.element;
+    if (v) v.muted = this.audio.muteVideo;
     if (replaceAudio) void this.loadAudio(file, true);
     this.root.classList.add("se-has-media"); // player is now mounted and command-ready
     delete this.root.dataset.mediaLoading;
@@ -3840,16 +3855,13 @@ class SubtitleEditor implements SubtitleEditorHandle {
     }
     this.pushSubtitles();
     this.updateFontWarning();
-    const memoryGb = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
-    const analysisLimit = (memoryGb <= 4 ? 192 : 512) * 1024 * 1024;
-    if (file.size > analysisLimit) {
-      this.toast("大文件采用流式播放；已跳过内嵌字幕轨扫描。");
-      return;
-    }
+    // Embedded subtitle extraction is explicit. Opening a video must not scan/copy its
+    // entire contents or silently switch away from the user's loaded ASS document.
+    if (options.scanEmbedded !== true) return;
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (generation !== this.mediaLoadGeneration) return;
     this.mediaContainer = bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3 ? "mkv" : "mp4";
-    if (options.scanEmbedded !== false) this.loadEmbeddedTracks(bytes);
+    this.loadEmbeddedTracks(bytes);
     this.pushSubtitles(true);
 
   }
@@ -5104,7 +5116,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "tool/line/select": openSelectLinesDialog(this.dialogHost()); return true;
       case "tool/time/postprocess": openTimingPostProcessorDialog(this.dialogHost()); return true;
       case "tool/export": openExportDialog(this.dialogHost()); return true;
-      case "tool/style/manager": openStyleManagerDialog(this.dialogHost()); return true;
+      case "tool/style/manager": this.video?.pause(); this.audio.stop(); openStyleManagerDialog(this.dialogHost()); return true;
       case "tool/time/kanji": openKanjiTimer({
         getDoc: () => this.doc,
         updateCue: (id, text) => this.updateCue(id, { text }),
@@ -5154,7 +5166,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "audio/play/current":
         if (audioRange) this.playAudioRange(audioRange.startMs, audioRange.endMs); return true;
       case "audio/play/toggle":
-        if (this.audio.playing) { this.audio.stop(); return true; }
+        if (this.audio.playing) { this.runAegisubCommand("audio/stop"); return true; }
         // Falls through to the active selection, as the desktop B command does.
       case "audio/play/selection":
         if (audioRange) this.playAudioRange(audioRange.startMs, () => this.audioSelection()?.endMs ?? audioRange.endMs); return true;
@@ -5172,7 +5184,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "audio/go_to/end": if (audioRange) this.timeline?.centerOn(audioRange.endMs / 1000); return true;
       case "audio/scroll/left": this.timeline?.panPixels(-128); return true;
       case "audio/scroll/right": this.timeline?.panPixels(128); return true;
-      case "audio/stop": this.audio.stop(); return true;
+      case "audio/zoom/in": this.timeline?.zoomBy(1.25); return true;
+      case "audio/zoom/out": this.timeline?.zoomBy(.8); return true;
+      case "audio/stop": if (this.audio.usesNativeVideoAudio) this.video?.pause(); this.audio.stop(); return true;
       case "video/stop": if (this.video) this.stopAndSeek(this.video.currentTime * 1000); return true;
       case "audio/playback/speed/increase": this.setPlaybackRate(this.getPlaybackRate() + 0.05); return true;
       case "audio/playback/speed/decrease": this.setPlaybackRate(this.getPlaybackRate() - 0.05); return true;
@@ -5197,6 +5211,19 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
       case "video/close": this.closeMedia(); return true;
       case "video/open": this.pickVideo(); return true;
+      case "subtitle/open/video": {
+        if (!this.mediaFile) { this.toast("请先打开视频。"); return true; }
+        const file = this.mediaFile;
+        if (file.size > 512 * 1024 * 1024) { this.toast("当前内嵌字幕提取器最多读取 512 MiB；请先提取字幕文件后打开。"); return true; }
+        void file.arrayBuffer().then(bytes => { if (this.mediaFile === file) this.loadEmbeddedTracks(new Uint8Array(bytes)); }).catch(error => this.toast(String(error)));
+        return true;
+      }
+      case "video/decoder/auto":
+      case "video/decoder/compatibility": {
+        localStorage.setItem("aegisub-web.video-decoder", command.endsWith("compatibility") ? "compatibility" : "auto");
+        if (this.mediaFile && this.video) void this.loadVideo(this.mediaFile, { restoreTime: this.video.currentTime, restorePaused: this.video.paused, scanEmbedded: false, preserveView: true });
+        return true;
+      }
       case "video/open/dummy": void this.openDummyMedia("video"); return true;
       case "video/play": this.setMobilePane("video"); if (this.video) void this.video.play().catch(() => {}); return true;
       case "video/play/line": this.setMobilePane("video"); this.playFromSelected(); return true;

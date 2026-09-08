@@ -1,7 +1,5 @@
 import { type AssStyle, type Cue, type SubtitleDoc, type SubtitleFormat } from "./cue";
 import { convertDoc, serializeSubtitles } from "./formats";
-import { makeDefaultStyle, uniqueStyleName } from "./formats/ass";
-import { openStyleEditor } from "./styles-editor";
 import { DEFAULT_EBU_STL_OPTIONS, encodeEbuStl } from "./formats/ebustl";
 import { exportPlainText } from "./formats/plaintext";
 import { serializeEncore, serializeSsa, serializeTranStation } from "./formats/legacy-export";
@@ -293,30 +291,4 @@ export function openExportDialog(host: DialogHost): void {
   }, true));
 }
 
-export function openStyleManagerDialog(host: DialogHost): void {
-  const ui = modal("Styles Manager / 样式管理器");
-  const list = element("div", "ad-list");
-  const render = (): void => {
-    list.textContent = "";
-    for (const style of host.getDoc().styles ?? []) list.append(button(style.name, () => openStyleEditor({
-      getDoc: host.getDoc,
-      onChange: () => { host.applyDoc(host.getDoc(), "Style updated"); render(); },
-      onRenameStyle: host.renameStyle,
-    }, style)));
-  };
-  const actions = element("div", "ad-quick");
-  actions.append(button("New style", () => {
-    const doc = host.getDoc(); doc.styles ??= [];
-    const style = makeDefaultStyle(uniqueStyleName(doc, "Default")); doc.styles.push(style);
-    host.applyDoc(doc, "Style added"); render();
-  }, true), button("Export style library", () => host.download("aegisub-web-styles.json", [JSON.stringify(host.getDoc().styles ?? [], null, 2)], "application/json")));
-  const importInput = element("input"); importInput.type = "file"; importInput.accept = ".json"; importInput.hidden = true;
-  importInput.addEventListener("change", async () => {
-    const file = importInput.files?.[0]; if (!file) return;
-    try { const styles = JSON.parse(await file.text()) as AssStyle[]; const doc = host.getDoc(); doc.styles = styles; host.applyDoc(doc, "Style library imported"); render(); } catch { /* invalid library */ }
-  });
-  actions.append(button("Import style library", () => importInput.click()), importInput);
-  ui.body.append(actions, list);
-  ui.foot.append(button("Close", ui.close));
-  render();
-}
+export { openNativeStyleManager as openStyleManagerDialog } from "./native-style-manager";

@@ -16,7 +16,7 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => (window as any).subHandle.runAegisubCommand("audio/open/blank"));
 });
 
-test("A/F scroll 128 pixels at native base zoom and after wheel zoom", async ({ page }) => {
+test("A/F scroll 128 pixels at native base zoom and after wheel zoom", async ({ page }, info) => {
   const canvas = page.locator(".se-timeline");
   await canvas.focus();
   expect((await view(page)).scale).toBe(50);
@@ -24,8 +24,13 @@ test("A/F scroll 128 pixels at native base zoom and after wheel zoom", async ({ 
   const first = await view(page);
   expect(first.left * first.scale).toBeCloseTo(128, 5);
   const box = (await canvas.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, -200);
+  if (/ipad|iphone/.test(info.project.name)) {
+    await page.getByRole("button", { name: "放大音频时间轴", exact: true }).click();
+    await canvas.focus();
+  } else {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -200);
+  }
   await expect.poll(async () => (await view(page)).scale).toBeGreaterThan(50);
   const zoomed = await view(page);
   await page.keyboard.press("f");

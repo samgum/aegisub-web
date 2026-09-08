@@ -1,3 +1,5 @@
+import { styleDialog, styleButton } from "./style-dialog-ui";
+
 export function openVideoDetails(file: Pick<File, "name" | "type" | "size">, media: { duration: number; videoWidth?: number; videoHeight?: number }, frameRate: number): void {
   if (!document.getElementById("aegisub-web-video-details-style")) {
     const style = document.createElement("style"); style.id = "aegisub-web-video-details-style";
@@ -34,16 +36,13 @@ export type ResolutionMismatchChoice = "ignore" | "set" | "stretch" | "add-borde
 
 export function openResolutionMismatchDialog(script: { x: number; y: number }, video: { x: number; y: number }): Promise<ResolutionMismatchChoice> {
   return new Promise((resolve) => {
-    const dialog = document.createElement("dialog"); dialog.className = "shell-dialog";
-    const heading = document.createElement("h2"); heading.textContent = "Resolution mismatch";
-    const text = document.createElement("p"); text.textContent = `Video: ${video.x}×${video.y} · Script: ${script.x}×${script.y}`;
+    const ui = styleDialog("分辨率不匹配", "as-resolution-dialog");
+    const text = document.createElement("p"); text.textContent = `视频：${video.x}×${video.y} · 字幕脚本：${script.x}×${script.y}`;
     const select = document.createElement("select");
-    for (const [value, label] of [["set", "Set script resolution to video"], ["stretch", "Resample (stretch)"], ["add-borders", "Resample (add borders)"], ["remove-borders", "Resample (remove borders)"], ["ignore", "Ignore"]] as const) select.append(new Option(label, value));
-    const apply = document.createElement("button"); apply.textContent = "Apply";
-    const cancel = document.createElement("button"); cancel.textContent = "Ignore";
-    const finish = (choice: ResolutionMismatchChoice): void => { resolve(choice); dialog.close(); dialog.remove(); };
-    apply.addEventListener("click", () => finish(select.value as ResolutionMismatchChoice)); cancel.addEventListener("click", () => finish("ignore"));
-    dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish("ignore"); });
-    dialog.append(heading, text, select, apply, cancel); document.body.append(dialog); dialog.showModal();
+    select.setAttribute("aria-label", "分辨率处理方式");
+    for (const [value, label] of [["set", "将脚本分辨率设为视频分辨率"], ["stretch", "重采样（拉伸）"], ["add-borders", "重采样（增加黑边）"], ["remove-borders", "重采样（裁去黑边）"], ["ignore", "保持脚本不变"]] as const) select.append(new Option(label, value));
+    const finish = (choice: ResolutionMismatchChoice): void => { resolve(choice); ui.close(); };
+    ui.dialog.addEventListener("close", () => resolve("ignore"), { once: true });
+    ui.body.append(text, select); ui.foot.append(styleButton("应用", () => finish(select.value as ResolutionMismatchChoice)), styleButton("忽略", () => finish("ignore")));
   });
 }

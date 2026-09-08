@@ -22,6 +22,9 @@ export class AudioWorkspace {
   element: (PlaybackClock & { preservesPitch: boolean }) | null = null;
   synthetic: DummyAudioSource | null = null;
   fromVideo = false;
+  private separateVideoAudio = false;
+  private linkedVideo: PlaybackClock | null = null;
+  private transportGeneration = 0;
   private player: MediaPlayerHandle | null = null;
   private generation = 0;
   private cancelRange: (() => void) | null = null;
@@ -29,14 +32,16 @@ export class AudioWorkspace {
   private unbindVideo: (() => void) | null = null;
 
   constructor(private host: HTMLElement, private callbacks: {
-    changed(): void;
+    changed(reason?: string): void;
     error(message: string): void;
     progress(message: string): void;
   }) {}
 
   get duration(): number { return Number.isFinite(this.element?.duration) ? this.element!.duration : 0; }
-  get currentTime(): number { return this.element?.currentTime ?? 0; }
-  get playing(): boolean { return this.element ? !this.element.paused : false; }
+  get currentTime(): number { return this.followingVideo && this.usesNativeVideoAudio ? this.linkedVideo?.currentTime ?? 0 : this.element?.currentTime ?? 0; }
+  get playing(): boolean { return this.followingVideo && this.usesNativeVideoAudio ? !this.linkedVideo?.paused : this.element ? !this.element.paused : false; }
+  get usesNativeVideoAudio(): boolean { return this.fromVideo && !this.separateVideoAudio; }
+  get muteVideo(): boolean { return !!this.element && !this.usesNativeVideoAudio; }
 
   async load(file: File, fromVideo = false): Promise<boolean> {
     this.close();
@@ -48,13 +53,14 @@ export class AudioWorkspace {
     this.host.dataset.filename = file.name;
     this.callbacks.changed();
     try {
+      let knownAudioCodec: string | null = null;
       if (!isAudioFile(file)) {
         // A video-only source is valid video, not a failed audio decode. Probe metadata
         // before constructing an audio element that would otherwise report a codec error.
         const { Input, BlobSource, ALL_FORMATS } = await import("mediabunny");
         const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
         let hasAudio = true;
-        try { hasAudio = !!await input.getPrimaryAudioTrack(); }
+        try { const track = await input.getPrimaryAudioTrack(); hasAudio = !!track; knownAudioCodec = await track?.getCodec() ?? null; }
         catch { /* Let the native/legacy player try containers this demuxer cannot inspect. */ }
         finally { input.dispose(); }
         if (generation !== this.generation) return false;
@@ -65,7 +71,7 @@ export class AudioWorkspace {
       // An audio element can read the audio track of MP4/WebM without decoding a second
       // video preview. Non-native containers still use mediaplay's existing codec path.
       let mime = audioMime[extension] ?? (/webm/i.test(file.type) ? "audio/webm" : isAudioFile(file) ? file.type : "audio/mp4");
-      const alac = /^(?:alac|m4a|mp4|mov|caf)$/.test(extension) && await fileHasAlac(file);
+      const alac = !knownAudioCodec && /^(?:alac|m4a|mp4|mov|caf)$/.test(extension) && await fileHasAlac(file);
       if (generation !== this.generation) return false;
       if (/^(?:aif|aiff|caf)$/.test(extension) || alac) {
         this.host.dataset.fallback = `${alac ? "alac" : "aurora"}-loading`;
@@ -79,6 +85,7 @@ export class AudioWorkspace {
       }
       if (generation !== this.generation) return false;
       this.analysisBlob = blob;
+      this.separateVideoAudio = blob !== file;
       this.player = createEmbeddedPlayer(this.host, { blob, mime, filename: file.name }, {
         embedded: true,
         onError: (message) => { if (generation === this.generation) this.callbacks.error(message); },
@@ -90,7 +97,7 @@ export class AudioWorkspace {
         media.setAttribute("playsinline", "");
         for (const event of ["play", "pause", "ended", "timeupdate", "loadedmetadata", "seeked"]) {
           media.addEventListener(event, () => {
-            if (generation === this.generation) this.callbacks.changed();
+            if (generation === this.generation) this.callbacks.changed(event);
           });
         }
       }
@@ -112,7 +119,7 @@ export class AudioWorkspace {
     this.synthetic = source; this.element = source;
     this.host.dataset.filename = source.name;
     this.host.dataset.sourceKind = kind;
-    for (const event of ["play", "pause", "ended", "timeupdate", "seeked"]) source.addEventListener(event, () => { if (generation === this.generation) this.callbacks.changed(); });
+    for (const event of ["play", "pause", "ended", "timeupdate", "seeked"]) source.addEventListener(event, () => { if (generation === this.generation) this.callbacks.changed(event); });
     this.callbacks.changed();
   }
 
@@ -122,19 +129,23 @@ export class AudioWorkspace {
     this.unbindVideo?.();
     this.unbindVideo = null;
     this.followingVideo = false;
+    this.linkedVideo = video;
     if (!video) return;
     const sync = (): void => {
       const audio = this.element;
       if (!audio || !this.followingVideo) return;
+      if (this.usesNativeVideoAudio) { this.callbacks.changed("timeupdate"); return; }
       audio.playbackRate = video.playbackRate;
       if (Math.abs(audio.currentTime - video.currentTime) > .12) this.seek(video.currentTime);
     };
     const play = (): void => {
       this.stop();
       this.followingVideo = true;
+      if (this.usesNativeVideoAudio) { this.callbacks.changed("play"); return; }
       this.seek(video.currentTime);
       sync();
-      void this.element?.play().catch((e: Error) => this.callbacks.error(e.message));
+      const request = this.transportGeneration, element = this.element;
+      void element?.play().catch((e: Error) => { if (request === this.transportGeneration && element === this.element) this.callbacks.error(e.message); });
     };
     const pause = (): void => { if (this.followingVideo) this.stop(); };
     video.addEventListener("play", play);
@@ -185,10 +196,13 @@ export class AudioWorkspace {
   }
 
   stop(): void {
+    this.transportGeneration++;
+    if (this.followingVideo && this.usesNativeVideoAudio && this.linkedVideo) this.seek(this.linkedVideo.currentTime);
     this.followingVideo = false;
     this.cancelRange?.();
     this.cancelRange = null;
     this.element?.pause();
+    this.callbacks.changed("pause");
   }
 
   close(): void {
@@ -201,6 +215,7 @@ export class AudioWorkspace {
     this.file = null;
     this.analysisBlob = null;
     this.fromVideo = false;
+    this.separateVideoAudio = false;
     this.host.replaceChildren();
     delete this.host.dataset.filename;
     delete this.host.dataset.loading;

@@ -24,8 +24,8 @@ function replaceSelectedText(value: string): void {
 function keepScriptResolution(): void {
   // The 160x120 fixture intentionally differs from the ASS PlayRes. Complete the real
   // modal choice before proceeding; racing metadata used to hide an open blocking dialog.
-  cy.contains("dialog.shell-dialog", "Resolution mismatch").should("be.visible").within(() => {
-    cy.contains("button", /^Ignore$/).click();
+  cy.contains("dialog.as-resolution-dialog", "分辨率不匹配").should("be.visible").within(() => {
+    cy.contains("button", /^忽略$/).click();
   });
 }
 

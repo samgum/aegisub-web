@@ -161,5 +161,43 @@ streaming file-audio rendering. In particular native snapping defaults on; the o
 implementation still needs its snap-target and modifier logic reconciled.
 Dummy project URI restoration and generated timecode-file export also remain to be completed.
 
-Next: finish viewport regression/publication, then address file-audio streaming, quality and
-remaining native visual-edit workflows. Do not close the goal at a command-count milestone.
+## 4K playback and native style-management repair (2026-09-08)
+
+Work is now directly on `main`, per user instruction; no new validation branches.
+
+The embedded video player eagerly copied/scanned the complete video even when the editor
+guard skipped large-file analysis. Common MP4/MOV/WebM inputs now use a disk-backed native
+video with one active AV transport. Independent audio audition remains available, but does
+not decode/play the same soundtrack a second time during video playback. Compatibility
+decode remains selectable in the Video menu for unsupported native formats.
+
+ASS uses a separately owned, display-sized canvas renderer clocked by presented video frames.
+Changing fonts does not recreate the video element. Audio waveform extraction uses a
+cancellable worker and BlobSource/AudioSampleSink; it retains peaks, not a whole-file copy
+or complete PCM. Legacy waveform fallback is restricted to 64 MiB. Unsupported large-file
+waveforms are reported explicitly. Normal playback restores a cached waveform bitmap and
+updates its cursor rather than rasterizing the waveform/spectrum and all cue bands per frame.
+Embedded subtitle extraction is explicit and currently limited to 512 MiB; stream-based
+embedded-subtitle extraction and whole-file legacy audio export remain open work.
+
+Measured locally with a generated 8-second 3840×2160 30fps H.264/AAC motion pattern (34 MB):
+154 video frames, zero dropped frames over about 5 seconds; a native-video-only baseline
+also dropped zero frames. Whole input File.arrayBuffer calls: zero. Subtitle raster:
+618×347 in a 1440×900 viewport. A transport probe counted zero full waveform repaints and
+129 cursor updates while the hidden audio stayed paused and native video remained audible.
+This is a bounded Windows/Chromium benchmark, not a guarantee for every 4K codec/device.
+The optional repeatable test takes `AEGISUB_4K_FIXTURE`; it is explicitly skipped when no
+real fixture is supplied, not counted as universal CI performance coverage.
+
+The style manager previously retained a detached style object after its first Apply cloned
+the host document. The new editor resolves the current document on every Apply, preserves
+unknown fields, updates renamed cue references, and implements OK/Cancel/Apply with an
+isolated draft. A native-style light dialog exposes the font/style fields, numeric ASS alpha,
+alignment grid and actual libass sample preview. The manager separates persistent named
+storage libraries from current-script styles, with edit/copy/delete/reorder, cross-copy and
+validated ASS/STY/JSON import; malformed input cannot replace existing styles. Mobile dialogs
+scroll within the viewport with reachable actions. Native audio zoom buttons provide a touch
+alternative to wheel zoom, including iPad/iPhone WebKit where the test protocol has no wheel.
+
+The long-term goal remains incomplete: full physical-device acceptance, native automation
+semantics and the outstanding timing/visual-workflow items above still require verification.
