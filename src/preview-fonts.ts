@@ -35,10 +35,9 @@ export function bundledFontFilename(family: string): string | null {
 }
 
 export function bundledPreviewFonts(doc: SubtitleDoc): string[] {
-  if (doc.format !== "ass") return [];
   const files = new Set<string>();
   if (doc.cues.some(cue => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(cue.text))) files.add("SourceHanSansCN-Regular.otf");
-  for (const family of requestedFontFamilies(doc)) { const file = bundledFontFilename(family); if (file) files.add(file); }
+  if (doc.format === "ass") for (const family of requestedFontFamilies(doc)) { const file = bundledFontFilename(family); if (file) files.add(file); }
   return [...files].sort();
 }
 

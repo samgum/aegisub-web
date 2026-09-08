@@ -145,3 +145,9 @@ jobs:
           pactl set-default-sink playwright
       - run: npm run build:demo
       - run: npx playwright test --project=${{ matrix.project }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure-${{ matrix.project }}
+          path: test-results/
+          retention-days: 7

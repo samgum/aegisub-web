@@ -4,7 +4,14 @@ import { readFileSync } from "node:fs";
 const oracle = JSON.parse(readFileSync("test-corpus/audio-clip-oracle.json", "utf8")) as { name: string; codec: string; rate: number; startMs: number; endMs: number; count: number; points: [number, number][] }[];
 const command = (page: Page, name: string) => page.evaluate(name => (window as any).subHandle.runAegisubCommand(name), name);
 async function downloadClip(page: Page): Promise<Buffer> {
-  const [download] = await Promise.all([page.waitForEvent("download"), command(page, "audio/save/clip")]);
+  const downloading = page.waitForEvent("download");
+  // Observe a failed worker immediately, before its toast disappears. A 30-second
+  // download timeout alone hides the actual decoder error on remote platform CI.
+  const failure = page.waitForFunction(() => document.querySelector<HTMLElement>(".se-root")?.dataset.audioExport === "error")
+    .then(async () => { throw new Error(`Audio export failed: ${await page.locator(".se-toast").textContent()}`); });
+  const completed = Promise.race([downloading, failure]);
+  await command(page, "audio/save/clip");
+  const download = await completed;
   const chunks: Buffer[] = [];
   for await (const chunk of await download.createReadStream()) chunks.push(Buffer.from(chunk));
   await expect(page.locator(".se-audio-export")).toHaveCount(0);

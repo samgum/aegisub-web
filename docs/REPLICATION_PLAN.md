@@ -382,3 +382,13 @@ Local verification for this increment: 428 unit cases pass (11 existing skips), 
 (35 explicit skips). The latter includes all 48 audio-clip cases across those profiles.
 Safari-engine media acceptance is delegated to the real macOS CI runner, not inferred
 from a Windows WebKit runtime that lacks usable native audio decoding.
+
+Public browser verification of `c6f26f4` compared actual downloaded WAV samples for
+WAV, ALAC, AC-3 and mid-file Opus/Vorbis against the reference (maximum error 0 or 1
+PCM unit), while verifying that the video element survived every audio/subtitle change.
+The release's macOS/iPad/iPhone CI exposed a FLAC export failure; it is not accepted as
+passed. Subsequent tests report the worker's error immediately and retain failure artifacts.
+The same visual check exposed missing CJK fallback on non-ASS files. Font preparation and
+change detection now include plain formats. The SRT regression failed with two identical
+tofu-box images before the fix; it now requires distinct ink for 甲甲/乙乙 and checks VTT
+replacement without closing virtual video. Unit coverage also includes LRC and TTML.

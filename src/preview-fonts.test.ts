@@ -8,6 +8,12 @@ it("loads CJK fallback when Chinese is introduced after an English-only project"
   expect(bundledPreviewFonts(doc("English"))).toEqual([]);
   expect(bundledPreviewFonts(doc("中文"))).toEqual(["SourceHanSansCN-Regular.otf"]);
 });
+it("supplies CJK glyphs to non-ASS preview without treating literal ASS tags as font requests", () => {
+  for (const format of ["srt", "vtt", "lrc", "ttml"] as const) {
+    expect(bundledPreviewFonts({ ...doc("中文{\\fnSource Han Sans CN Heavy}"), format })).toEqual(["SourceHanSansCN-Regular.otf"]);
+    expect(bundledPreviewFonts({ ...doc("English"), format })).toEqual([]);
+  }
+});
 it("recognizes inline fonts without treating visible text or animated tags as static declarations", () => {
   const project = doc("{\\fnSource Han Sans CN Heavy\\bord2}中文{\\t(0,100,\\fnNotAStaticFont)}\\fnNotAnOverride");
   expect(requestedFontFamilies(project)).toEqual(["Arial", "Source Han Sans CN Heavy"]);

@@ -3599,8 +3599,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
   // --- media preview -------------------------------------------------------
 
   private currentEmbeddedFontSignature(doc: SubtitleDoc = this.doc, fonts?: EmbeddedFont[]): string {
-    if (doc.format !== "ass") return "";
-    return JSON.stringify({ embedded: (fonts ?? parseEmbeddedFonts(serializeSubtitles(doc))).map(font => `${font.filename}:${fontBytesFingerprint(font.bytes)}`), bundled: bundledPreviewFonts(doc) });
+    return JSON.stringify({ embedded: (fonts ?? (doc.format === "ass" ? parseEmbeddedFonts(serializeSubtitles(doc)) : [])).map(font => `${font.filename}:${fontBytesFingerprint(font.bytes)}`), bundled: bundledPreviewFonts(doc) });
   }
 
   private releaseEmbeddedFontUrls(): void {
@@ -3624,7 +3623,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const fonts = this.doc.format === "ass" ? parseEmbeddedFonts(serializeSubtitles(this.doc)) : [];
     this.bundledFontSignature = JSON.stringify(bundledPreviewFonts(this.doc));
     this.embeddedFontSignature = this.currentEmbeddedFontSignature(this.doc, fonts);
-    if (this.doc.format !== "ass") return [];
     const generation = this.previewFontGeneration;
     for (const font of fonts) {
       if (!font.bytes.length) continue;
