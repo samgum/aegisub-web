@@ -2,7 +2,8 @@
 // @jellyfin/libass-wasm (a transitive dep via mediaplay) into demo/public/octopus/ so
 // the embedded mediaplay preview can spawn its worker from a same-origin URL and render
 // styled ASS. Generated (gitignored); run via the dev/build:demo scripts.
-import { cpSync, mkdirSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { patchOctopusTrackRender } from "./patch-octopus-track.mjs";
 
 const SRC = "node_modules/@jellyfin/libass-wasm/dist/js";
 const OUT = "demo/public/octopus";
@@ -12,6 +13,7 @@ mkdirSync(OUT, { recursive: true });
 for (const f of ["subtitles-octopus-worker.js", "subtitles-octopus-worker.wasm", "default.woff2", "COPYRIGHT"]) {
   cpSync(`${SRC}/${f}`, `${OUT}/${f}`);
 }
+writeFileSync(`${OUT}/subtitles-octopus-worker.js`, patchOctopusTrackRender(readFileSync(`${SRC}/subtitles-octopus-worker.js`, "utf8")));
 for (const f of ["SourceHanSansCN-Regular.otf", "SourceHanSansCN-Medium.otf", "SourceHanSansCN-Heavy.otf", "SourceHanSerifCN-Heavy.otf"]) {
   cpSync(`vendor/fonts/${f}`, `${OUT}/${f}`);
 }

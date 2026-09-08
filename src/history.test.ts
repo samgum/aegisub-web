@@ -5,6 +5,24 @@ import { History } from "./history";
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 describe("History", () => {
+  it("amends explicit timing commits without a debounce or extra undo entries", () => {
+    const h = new History<number>(clone); h.reset(0);
+    let id = h.record(1); expect(h.canAmend(id)).toBe(true);
+    id = h.record(2, id); id = h.record(3, id);
+    expect(h.undo(3)).toBe(0); expect(h.undo(0)).toBeNull(); expect(h.redo(0)).toBe(3);
+    expect(h.canAmend(id)).toBe(false);
+  });
+  it("does not amend through a text edit, undo/redo, or an explicit checkpoint", () => {
+    const h = new History<number>(clone); h.reset(0);
+    const id = h.record(1); h.begin(); h.commit(10);
+    expect(h.canAmend(id)).toBe(false); const next = h.record(11, id);
+    expect(h.undo(11)).toBe(10); expect(h.redo(10)).toBe(11); expect(h.canAmend(next)).toBe(false);
+    h.commit(11); h.record(12, next); expect(h.undo(12)).toBe(11);
+  });
+  it("records independent manual commits even when consecutive", () => {
+    const h = new History<number>(clone); h.reset(0); h.record(1); h.record(2);
+    expect(h.undo(2)).toBe(1); expect(h.undo(1)).toBe(0);
+  });
   it("undoes and redoes committed groups", () => {
     const h = new History<number>(clone);
     h.reset(0);

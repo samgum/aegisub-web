@@ -1,6 +1,7 @@
 import { VirtualPlaybackClock, type PlaybackClock } from "./playback-clock";
 import { convertDoc, parseSubtitles, serializeSubtitles } from "./formats";
 import type SubtitlesOctopus from "@jellyfin/libass-wasm";
+import { assWorkerUrl } from "./ass-renderer-assets";
 
 export interface DummyVideoOptions {
   width: number; height: number; frames: number; frameRate: number; color: string; checkerboard: boolean;
@@ -75,7 +76,7 @@ export function createDummyVideoPlayer(host: HTMLElement, options: DummyVideoOpt
       const { default: Octopus } = await import("@jellyfin/libass-wasm");
       if (disposed || serial !== generation) return;
       renderer = new Octopus({ canvas: subtitles, subContent: content, fonts,
-        workerUrl: new URL("octopus/subtitles-octopus-worker.js", document.baseURI).toString(),
+        workerUrl: assWorkerUrl(),
         fallbackFont: new URL("octopus/default.woff2", document.baseURI).toString(), targetFps: Math.min(60, options.frameRate),
         onReady: render, onError: error => { if (!disposed && serial === generation) onError(`字幕预览：${String(error)}`); },
       });

@@ -1,4 +1,5 @@
 import type SubtitlesOctopus from "@jellyfin/libass-wasm";
+import { assWorkerUrl } from "./ass-renderer-assets";
 
 /** Firefox can crash if a WASM worker is terminated while its module is compiling.
  * A get-styles response is a runtime handshake (unlike Octopus.onReady, which fires
@@ -76,7 +77,7 @@ export class CanvasAssRenderer {
       const { default: Octopus } = await import("@jellyfin/libass-wasm");
       if (this.disposed || generation !== this.generation) return;
       this.renderer = new Octopus({ canvas: this.canvas, subContent: this.content, fonts: this.fonts,
-        workerUrl: new URL("octopus/subtitles-octopus-worker.js", document.baseURI).toString(),
+        workerUrl: assWorkerUrl(),
         fallbackFont: new URL("octopus/default.woff2", document.baseURI).toString(), targetFps: 60,
         onReady: () => { if (generation === this.generation) { this.renderer?.setIsPaused(true, this.time); this.renderAt(this.time, true); } },
         onError: error => { if (!this.disposed && generation === this.generation) this.onError(String(error)); },

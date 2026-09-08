@@ -4,6 +4,14 @@ import { blankCue } from "./cue";
 import { History } from "./history";
 
 describe("audio marker drafts", () => {
+  it("retains precise live markers after commit, then uses stored ASS precision on reselect", () => {
+    const cue = blankCue(1000, 3000); const draft = new TimingDraft(); draft.set(cue, 1437, 2786);
+    const [committed] = draft.commit([cue]);
+    expect(draft.pending).toBe(false); expect(draft.entries().size).toBe(0);
+    expect(draft.read(committed, 10)).toMatchObject({ startMs: 1437, endMs: 2786 });
+    draft.clear(); expect(draft.read(committed, 10)).toMatchObject({ startMs: 1440, endMs: 2790 });
+    expect(draft.read(committed)).toBe(committed); // non-ASS formats retain milliseconds
+  });
   it("does not change the saved line until commit, and preserves intervening text edits", () => {
     const cue = blankCue(1000, 3000, "原文\\N第二行");
     const draft = new TimingDraft();

@@ -12,6 +12,7 @@ import {
   type SubtitleDoc,
   type SubtitleFormat,
   blankCue,
+  assTimeMilliseconds,
   cps,
   formatAssTime,
   formatTimestamp,
@@ -253,6 +254,7 @@ interface HistorySnap {
   tracks: { id: string; label: string; language: string; doc: SubtitleDoc }[];
   activeTrackId: string;
   selectedId: string | null;
+  selectedIds: string[];
 }
 const HIST_MAX = 100;
 
@@ -405,6 +407,8 @@ class SubtitleEditor implements SubtitleEditorHandle {
   // Snapshots are immutable (restore clones out), so History's clone can be identity.
   private history = new History<HistorySnap>((s) => s, HIST_MAX);
   private histTimer = 0;
+  private autoTimingHistory: { id: number; snapshot: HistorySnap } | null = null;
+  private timingPreviewRaf = 0;
   private restoring = false;
   private undoHandler: UndoHandler | null = null;
   /** Where the other people in a session are, by cue id. */
@@ -713,6 +717,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   // Re-point all views at the active track's document (format UI, list head, list, detail).
   private refreshForActiveDoc(): void {
+    this.autoTimingHistory = null;
     this.timingDraft.clear();
     const isAss = this.doc.format === "ass";
     this.stylesBtn.style.display = isAss ? "" : "none";
@@ -840,7 +845,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     body.appendChild(strip);
     this.root.appendChild(body);
     this.timeline = new Timeline({
-      getCues: () => this.doc.cues.map(cue => this.timingDraft.read(cue)),
+      getCues: () => this.doc.cues.map(cue => this.timingDraft.read(cue, this.doc.format === "ass" ? 10 : 1)),
       getDuration: () => this.audio.duration,
       getCurrentTime: () => this.audio.currentTime,
       getKeyframesMs: () => this.audioKeyframeTimes(),
@@ -857,11 +862,11 @@ class SubtitleEditor implements SubtitleEditorHandle {
       onSeek: (sec) => { this.audio.stop(); this.audio.seek(sec); },
       onSelectCue: (id) => this.select(id),
       onRetime: (id, startMs, endMs, commit) => this.retimeCue(id, startMs, endMs, commit),
-      onRetimeBatch: (updates, commit) => {
+      onRetimeBatch: (updates) => {
         const cues = new Map(this.doc.cues.map(cue => [cue.id, cue]));
         for (const update of updates) { const cue = cues.get(update.id); if (cue) this.timingDraft.set(cue, update.startMs, update.endMs); }
         this.renderTimingDraft();
-        if (commit && audioFlag("autocommit", false)) this.commitAudioTiming(false);
+        if (audioFlag("autocommit", false)) this.applyTimingDraft(true);
       },
     });
     this.timeline.mount(strip);
@@ -1104,18 +1109,18 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   // Marker movement is a draft until the explicit audio commit (or optional auto-commit).
-  private retimeCue(id: string, startMs: number, endMs: number, commit: boolean): void {
+  private retimeCue(id: string, startMs: number, endMs: number, _commit: boolean): void {
     const cue = this.doc.cues.find((c) => c.id === id);
     if (!cue) return;
     this.timingDraft.set(cue, startMs, endMs);
     this.renderTimingDraft();
     // The audio display owns native drag-edge scrolling; do not fit/jump on mouse-up.
-    if (commit && localStorage.getItem("aegisub-web.audio-autocommit") === "true") this.commitAudioTiming(false);
+    if (audioFlag("autocommit", false)) this.applyTimingDraft(true);
   }
 
   private audioSelection(): Cue | undefined {
     const cue = this.selectedCue();
-    return cue && this.timingDraft.read(cue);
+    return cue && this.timingDraft.read(cue, this.doc.format === "ass" ? 10 : 1);
   }
 
   private scrollAudioSelectionIntoView(): void {
@@ -1135,28 +1140,48 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const cue = this.audioSelection();
     if (cue) {
       const fields = this.detailEl.querySelectorAll<HTMLInputElement>(".se-times:first-child > .se-field > input");
-      const sep = this.doc.format === "srt" ? "," : ".";
-      const values = [formatTimestamp(cue.startMs, sep), formatTimestamp(cue.endMs, sep), ((cue.endMs - cue.startMs) / 1000).toFixed(3)];
+      const values = [this.formatEditTime(cue.startMs), this.formatEditTime(cue.endMs), this.formatEditDuration(cue)];
       fields.forEach((field, index) => { if (document.activeElement !== field && values[index] !== undefined) field.value = values[index]; });
+      this.updateCpsInfo(cue);
     }
     this.timeline?.render();
+  }
+
+  private formatEditTime(ms: number): string { return this.doc.format === "ass" ? formatAssTime(ms) : formatTimestamp(ms, this.doc.format === "srt" ? "," : "."); }
+  private formatEditDuration(cue: Cue): string { return this.doc.format === "ass" ? formatAssTime(assTimeMilliseconds(cue.endMs) - assTimeMilliseconds(cue.startMs)) : ((cue.endMs - cue.startMs) / 1000).toFixed(3); }
+
+  private applyTimingDraft(automatic: boolean): void {
+    if (!this.timingDraft.pending) return;
+    const updates = this.timingDraft.entries();
+    const previous = automatic && this.autoTimingHistory && this.history.canAmend(this.autoTimingHistory.id) ? this.autoTimingHistory : null;
+    const before = previous?.snapshot ?? this.snapshot();
+    window.clearTimeout(this.histTimer); this.histTimer = 0;
+    if (!previous) this.history.commit(before); // seal text/other edits before timing
+    // Keep the runtime line objects stable, like TimeableLine::Apply. The detail editor's
+    // style/actor controls hold these objects; replacing them would silently detach edits.
+    for (const cue of this.doc.cues) { const range = updates.get(cue.id); if (range) Object.assign(cue, range); }
+    this.timingDraft.markCommitted();
+    // Structural sharing mirrors the native single-line amendment: keep large embedded
+    // font strings and unchanged cues out of repeated full-document clones while dragging.
+    const snapshot: HistorySnap = { ...before, activeTrackId: this.activeTrackId, selectedId: this.selectedId, selectedIds: [...this.selectedIds],
+      tracks: before.tracks.map(track => track.id !== this.activeTrackId ? track : { ...track, doc: { ...track.doc,
+        cues: track.doc.cues.map(cue => updates.has(cue.id) ? { ...cue, ...updates.get(cue.id)! } : cue),
+      } }),
+    };
+    const id = this.history.record(snapshot, previous?.id);
+    this.autoTimingHistory = automatic ? { id, snapshot } : null;
+    for (const cueId of updates.keys()) this.refreshRow(cueId);
+    this.root.dataset.timingPending = "false";
+    this.markDirty(false); this.updateHistoryButtons();
+    // Auto-commit updates the real ASS preview during the gesture, not 300ms after
+    // the final pointer event. At most one renderer update is submitted per paint.
+    if (!this.timingPreviewRaf) this.timingPreviewRaf = requestAnimationFrame(() => { this.timingPreviewRaf = 0; this.pushSubtitles(true); });
   }
 
   private commitAudioTiming(next: boolean, resetNext = false): void {
     const range = this.audioSelection();
     if (!range) return;
-    if (this.timingDraft.pending) {
-      // Finish a text edit before opening the separate manual timing undo transaction.
-      window.clearTimeout(this.histTimer);
-      this.histTimer = 0;
-      this.history.commit(this.snapshot());
-      this.doc.cues = this.timingDraft.commit(this.doc.cues);
-      for (const cue of this.doc.cues) this.refreshRow(cue.id);
-      this.markDirty();
-      window.clearTimeout(this.histTimer);
-      this.histTimer = 0;
-      this.history.commit(this.snapshot());
-    }
+    this.applyTimingDraft(false);
     if (next) {
       const index = this.doc.cues.findIndex(cue => cue.id === range.id);
       let following = this.doc.cues[index + 1];
@@ -1457,6 +1482,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.visualTransform?.refresh();
     const primaryChanged = primary !== this.selectedId;
     if (primaryChanged) {
+      this.autoTimingHistory = null;
       this.timingDraft.clear();
       this.root.dataset.timingPending = "false";
       // Deferred: setSelection runs mid-render, and a host may repaint in response.
@@ -1514,24 +1540,23 @@ class SubtitleEditor implements SubtitleEditorHandle {
       this.detailEl.appendChild(el("div", "se-count", t("selectCue")));
       return;
     }
-    const sep = this.doc.format === "srt" ? "," : ".";
     const times = el("div", "se-times");
     times.appendChild(
-      this.timeField(t("start"), formatTimestamp(cue.startMs, sep), (v) => {
+      this.timeField(t("start"), this.formatEditTime(cue.startMs), (v) => {
         const ms = parseTimestamp(v);
         if (!Number.isNaN(ms)) this.updateCue(cue.id, { startMs: ms });
       }),
     );
     times.appendChild(
-      this.timeField(t("end"), formatTimestamp(cue.endMs, sep), (v) => {
+      this.timeField(t("end"), this.formatEditTime(cue.endMs), (v) => {
         const ms = parseTimestamp(v);
         if (!Number.isNaN(ms)) this.updateCue(cue.id, { endMs: ms });
       }),
     );
     times.appendChild(
-      this.timeField(t("duration"), ((cue.endMs - cue.startMs) / 1000).toFixed(3), (v) => {
-        const secs = parseFloat(v);
-        if (!Number.isNaN(secs)) this.updateCue(cue.id, { endMs: cue.startMs + Math.round(secs * 1000) });
+      this.timeField(t("duration"), this.formatEditDuration(cue), (v) => {
+        const durationMs = v.includes(":") ? parseTimestamp(v) : Number(v) * 1000;
+        if (v && Number.isFinite(durationMs)) this.updateCue(cue.id, { endMs: this.doc.format === "ass" ? assTimeMilliseconds(cue.startMs) + assTimeMilliseconds(durationMs) : cue.startMs + Math.max(0, Math.round(durationMs)) });
       }),
     );
     if (this.doc.format === "ass") times.appendChild(this.styleField(cue));
@@ -3529,8 +3554,6 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private async saveSubtitles(saveAs: boolean): Promise<void> {
-    const text = serializeSubtitles(this.doc);
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const picker = (window as unknown as { showSaveFilePicker?: (options: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker;
     if (saveAs && picker) {
       try {
@@ -3542,6 +3565,9 @@ class SubtitleEditor implements SubtitleEditorHandle {
         return;
       }
     }
+    this.autoTimingHistory = null; // accepted save is a boundary; cancelling the picker is not
+    const text = serializeSubtitles(this.doc);
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     if (this.subtitleFileHandle) {
       const writable = await this.subtitleFileHandle.createWritable();
       await writable.write(blob);
@@ -4584,12 +4610,12 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.toastTimer = window.setTimeout(() => this.toastEl?.classList.remove("on"), 2600);
   }
 
-  private markDirty(): void {
+  private markDirty(recordHistory = true): void {
     this.reportDocFields();
     this.countEl.textContent = t("cueCount", { n: this.doc.cues.length });
     this.pushSubtitles();
     this.opts.onChange?.();
-    this.scheduleHistory();
+    if (recordHistory) { this.autoTimingHistory = null; this.scheduleHistory(); }
   }
 
   // --- undo / redo ---------------------------------------------------------
@@ -4599,6 +4625,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       tracks: this.tracks.map((tr) => ({ id: tr.id, label: tr.label, language: tr.language, doc: structuredClone(tr.doc) })),
       activeTrackId: this.activeTrackId,
       selectedId: this.selectedId,
+      selectedIds: [...this.selectedIds],
     };
   }
 
@@ -4649,7 +4676,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.activeTrackId = this.tracks.some((tr) => tr.id === snap.activeTrackId) ? snap.activeTrackId : (this.tracks[0]?.id ?? "");
     this.renderTrackBar();
     this.refreshForActiveDoc(); // re-selects cues[0]; restore the saved selection if it survives
-    if (snap.selectedId && this.doc.cues.some((c) => c.id === snap.selectedId)) this.select(snap.selectedId);
+    if (snap.selectedId && this.doc.cues.some((c) => c.id === snap.selectedId)) this.setSelection(snap.selectedIds.filter(id => this.doc.cues.some(cue => cue.id === id)), snap.selectedId);
     this.pushSubtitles(true);
     this.opts.onChange?.();
     this.restoring = false;
@@ -5198,7 +5225,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "audio/view/waveform": void this.showAudioView("waveform"); return true;
       case "audio/save/clip": void this.saveSelectedAudioClip(); return true;
       case "audio/play/line":
-        if (selectedCue) this.playAudioRange(selectedCue.startMs, selectedCue.endMs); return true;
+        if (selectedCue) this.playAudioRange(this.doc.format === "ass" ? assTimeMilliseconds(selectedCue.startMs) : selectedCue.startMs, this.doc.format === "ass" ? assTimeMilliseconds(selectedCue.endMs) : selectedCue.endMs); return true;
       case "audio/play/current":
         if (audioRange) this.playAudioRange(audioRange.startMs, audioRange.endMs); return true;
       case "audio/play/toggle":
@@ -5550,6 +5577,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.spectrumCancel = null;
     window.clearTimeout(this.subtitleTimer);
     cancelAnimationFrame(this.subtitleFrameRaf);
+    cancelAnimationFrame(this.timingPreviewRaf);
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.histTimer);
     this.tbObserver?.disconnect();

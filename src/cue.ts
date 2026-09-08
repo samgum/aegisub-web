@@ -186,8 +186,9 @@ export function visibleText(text: string): string {
 }
 
 // ASS timestamp: "H:MM:SS.cc" (1-digit hour, centisecond precision).
+export function assTimeMilliseconds(ms: number): number { return Math.round(Math.max(0, ms) / 10) * 10; }
 export function formatAssTime(ms: number): string {
-  const totalCs = Math.round(Math.max(0, ms) / 10); // whole value in centiseconds
+  const totalCs = assTimeMilliseconds(ms) / 10;
   const cs = totalCs % 100;
   const totalSeconds = Math.floor(totalCs / 100);
   const s = totalSeconds % 60;

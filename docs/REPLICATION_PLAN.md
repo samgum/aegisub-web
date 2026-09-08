@@ -88,8 +88,10 @@ for arbitrary unavailable fonts or all font collections.
    VFR fixtures, not only media.currentTime; streaming audio analysis/export retaining original channels/sample rate; reliable
    unsupported-codec audio (including video with ALAC) on every target engine. Audio clip
    export for file audio is still 16k mono; synthetic audio exports native-rate PCM16.
-2. Native timing: finish full pointer-cancel/auto-commit undo coalescing, negative-range and
-   ASS centisecond quantization comparisons, audio cache policy and sample-accurate endpoints.
+2. Native timing: exhaustive pointer-cancel/auto-commit edge cases, negative-range and native
+   ten-hour clamp behavior, segmented time-input/frame modes, audio cache policy and
+   sample-accurate endpoints. Live auto-commit and basic native amendment boundaries now
+   have source-derived coverage below; they are not exhaustive native GUI acceptance.
    Native zoom/scroll, keyframe/video-edge snapping and linked gain now have the regression
    coverage described below; this is not exhaustive desktop timing acceptance.
 3. Visual typesetting: complete native perspective/origin/move/clip control-point behavior
@@ -245,3 +247,40 @@ Local full regression at this increment: 396 unit tests (11 existing skips), 68 
 tests and 96 Playwright tests across Chromium/Firefox/Android profiles (30 explicit skips).
 The 4K benchmark and target macOS/Linux/Windows CI are checked separately before handoff.
 Physical device validation and the other remaining objective requirements stay open.
+
+## Live timing commits and paused-frame replacement (2026-09-08)
+
+Compared `AudioTimingControllerDialogue::SetMarkers/DoCommit/Revert`,
+`SubsController::OnCommit` and `agi::Time` formatting. The browser previously applied
+automatic timing only on pointer-up and made every automatic change a manual-style undo
+entry. It now commits each marker update to the actual document, while an explicit history
+revision lets uninterrupted automatic updates amend one entry. Time passing alone does
+not split that entry. Text/metadata edits, active-line changes, undo/redo and an accepted
+save form boundaries. Cancelling the Save As picker does not form a save boundary.
+
+Runtime cue objects remain stable during live commits, so actor/style controls cannot
+retain a detached cue. Immutable timing snapshots share unchanged fields rather than
+cloning embedded fonts repeatedly. Multi-selection is included in undo snapshots. The
+preview is updated at most once per browser paint, instead of waiting for the old trailing
+300ms subtitle debounce. Live committed markers retain their exact positions; reselecting
+an ASS line reads centisecond-rounded stored time, matching native marker initialization.
+
+ASS timestamp export already had the correct 5ms half-up rule. Its edit fields now also
+show H:MM:SS.cc; duration subtracts individually rounded boundaries, as the desktop time
+controls do. SRT and other non-ASS millisecond displays remain unchanged. Native masked
+input, negative live-marker coordinates and full ten-hour boundary comparisons remain open.
+
+Real canvas tests exposed a separate libass-WASM worker bug: replacing the track with one
+having no visible event reset change detection but did not emit a blank frame, leaving
+old subtitle pixels visible while paused. The asset-copy adapter forces only the initial
+render after setTrack; ordinary video ticks are unchanged. It checks the exact pinned
+worker method and fails on an incompatible upgrade. Copyright notices are preserved.
+The renderer worker URL has an adapter revision to bypass stale HTTP caches on updates.
+
+Checks: 401 unit cases pass (11 existing skips), 68 Cypress cases pass, and 115 applicable
+Chromium/Firefox/Android-profile cases pass (35 explicit skips). New workflows verify
+commit-before-pointer-up, amendments past 500ms and across gestures, separate text/save/
+selection boundaries, live actor controls, whole-selection undo, ASS/SRT precision and
+the actual transition from painted to blank ASS at a fixed paused video time. An additional
+12-case Chromium run covers dummy video and the 4K benchmark with the revised worker URL.
+These are bounded workflow checks, not proof of the complete replication objective.

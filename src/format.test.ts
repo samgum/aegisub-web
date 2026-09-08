@@ -196,6 +196,10 @@ describe("ASS", () => {
     expect(formatAssTime(1000)).toBe("0:00:01.00");
     expect(formatAssTime(5500)).toBe("0:00:05.50");
     expect(formatAssTime(3661230)).toBe("1:01:01.23");
+    expect(formatAssTime(1004)).toBe("0:00:01.00");
+    expect(formatAssTime(1005)).toBe("0:00:01.01");
+    expect(formatAssTime(59995)).toBe("0:01:00.00");
+    expect(formatAssTime(3599995)).toBe("1:00:00.00");
   });
   it("re-emits only the edited style, keeping the rest byte-exact", () => {
     const doc = parseAss(ASS_GOLDEN);

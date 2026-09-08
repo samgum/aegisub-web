@@ -1,4 +1,5 @@
 import { createMediaPlayer } from "mediaplay";
+import { assWorkerUrl } from "./ass-renderer-assets";
 
 /** The pinned player's embedded option disables document hotkeys, but its loadeddata,
  * 600ms and 1500ms callbacks still focus .ot-media. An editor owns focus, not its decoder.
@@ -6,7 +7,7 @@ import { createMediaPlayer } from "mediaplay";
 export function createEmbeddedPlayer(...args: Parameters<typeof createMediaPlayer>): ReturnType<typeof createMediaPlayer> {
   const focused = document.activeElement;
   let disposed = false;
-  const player = createMediaPlayer(args[0], args[1], { ...args[2], onError: message => { if (!disposed) args[2]?.onError?.(message); } });
+  const player = createMediaPlayer(args[0], args[1], { ...args[2], libass: { workerUrl: assWorkerUrl(), ...args[2]?.libass }, onError: message => { if (!disposed) args[2]?.onError?.(message); } });
   const destroy = player.destroy.bind(player);
   player.destroy = () => {
     if (disposed) return;
