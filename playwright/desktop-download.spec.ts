@@ -9,6 +9,7 @@ test("desktop download stays visible and opens the moving latest-release link wi
   await expect(link).toBeVisible(); await expect(link).toHaveAttribute("href", "https://github.com/samgum/Aegisub/releases/latest");
   await expect(link).toHaveAttribute("target", "_blank"); await expect(link).toHaveAttribute("rel", /noopener/);
   const box = (await link.boundingBox())!;
+  expect((await link.locator("svg").boundingBox())!.width).toBeCloseTo(14, 2);
   expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   expect(box.y + box.height).toBeLessThanOrEqual(65);
   // A fixture isolates browser navigation from GitHub availability. The actual public
