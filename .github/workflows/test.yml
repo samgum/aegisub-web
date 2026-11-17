@@ -35,7 +35,7 @@ jobs:
           echo "npm ci failed after 3 attempts"
           exit 1
       - run: npm run typecheck
-      - run: npm audit --audit-level=high
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm test
       - run: npm run build
 

@@ -16,6 +16,10 @@ function deferredRetirement(renderer: SubtitlesOctopus): () => Promise<void> {
     renderer.dispose(); resolve();
   };
   const ready = (event: MessageEvent) => {
+    // SubtitlesOctopus drops renderCanvas messages that share a Date.now() millisecond
+    // (common when Emscripten's messageResender flushes queued renders after preloading);
+    // reset lastRenderTime after each FIFO canvas message so subsequent frames apply.
+    if (event.data?.target === "canvas") { renderer.lastRenderTime = -1; return; }
     if (event.data?.target !== "get-styles") return;
     initialized = true;
     if (retired) { clearTimeout(timer); timer = window.setTimeout(finish, 0); }
