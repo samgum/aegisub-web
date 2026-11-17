@@ -67,7 +67,7 @@ test("linked amplitude and volume change the actual generated audio signal", asy
   await page.locator(".se-audio-controls").getByRole("button", { name: "播放当前行", exact: true }).click();
   await command(page, "audio/play/to_end");
   const rms = () => page.evaluate(() => (window as any).subHandle.audio.synthetic.level());
-  await expect.poll(rms).toBeGreaterThan(.02); const original = await rms();
+  await expect.poll(rms).toBeGreaterThan(.06); const original = await rms();
   await slider(page, "波形纵向缩放", 25); await expect(volume).toHaveValue("25");
   await expect.poll(rms).toBeLessThan(original * .2); const quiet = await rms(); expect(quiet).toBeGreaterThan(original * .06);
   expect(await page.evaluate(() => (window as any).subHandle.timeline.amplitude)).toBe(.125);
