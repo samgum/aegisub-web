@@ -135,8 +135,32 @@ export class VisualTransformOverlay {
         updates.set(cue.id, setVisualTags(cue.text, { org: `(${Math.round(origin.x + dx)},${Math.round(origin.y + dy)})` }));
       }
     } else {
-      const tags = transformDrag(this.host.mode, drag.state, drag.start, current, drag.origin, { ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, alt: event.altKey });
-      for (const cue of drag.cues) updates.set(cue.id, setVisualTags(cue.text, tags));
+      const modifiers = { ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, alt: event.altKey };
+      const primaryTags = transformDrag(this.host.mode, drag.state, drag.start, current, drag.origin, modifiers);
+      updates.set(drag.cues[0].id, setVisualTags(drag.cues[0].text, primaryTags));
+      if (drag.cues.length > 1) {
+        const wrapDeg = (v: number) => String(Number((((v % 360) + 360) % 360).toPrecision(4)));
+        const deltaAngle = (next: number, prev: number) => ((next - prev + 540) % 360) - 180;
+        for (let i = 1; i < drag.cues.length; i += 1) {
+          const cue = drag.cues[i];
+          const init = visualState(this.host.getDoc(), cue);
+          if (this.host.mode === "rotate-z") {
+            const d = deltaAngle(Number(primaryTags.frz), drag.state.rz);
+            updates.set(cue.id, setVisualTags(cue.text, { frz: wrapDeg(init.rz + d) }));
+          } else if (this.host.mode === "rotate-xy") {
+            const dx = deltaAngle(Number(primaryTags.frx), drag.state.rx);
+            const dy = deltaAngle(Number(primaryTags.fry), drag.state.ry);
+            updates.set(cue.id, setVisualTags(cue.text, { frx: wrapDeg(init.rx + dx), fry: wrapDeg(init.ry + dy) }));
+          } else {
+            const dx = Number(primaryTags.fscx) - drag.state.sx;
+            const dy = Number(primaryTags.fscy) - drag.state.sy;
+            updates.set(cue.id, setVisualTags(cue.text, {
+              fscx: String(Math.max(0, Math.round(init.sx + dx))),
+              fscy: String(Math.max(0, Math.round(init.sy + dy))),
+            }));
+          }
+        }
+      }
     }
     drag.updates = updates;
     this.draw();

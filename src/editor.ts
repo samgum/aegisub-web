@@ -52,7 +52,7 @@ import { audioFlag } from "./audio-options";
 import { TimingDraft } from "./timing-draft";
 import { VideoFrameIndex, readVideoFrameIndex } from "./video-frame-index";
 import { VisualTransformOverlay } from "./visual-transform-overlay";
-import type { VisualTransformMode } from "./visual-transform";
+import { setVisualTags, type VisualTransformMode } from "./visual-transform";
 import { extractWaveformPeaks, extractMkvSubtitles, type MediaPlayerHandle, type MkvSubtitleTrack } from "mediaplay";
 import { createEmbeddedPlayer } from "./embedded-player";
 import { createNativeVideoPlayer } from "./native-video-player";
@@ -81,7 +81,7 @@ import {
   swapSelectedRows,
   type GridSortKey,
 } from "./aegisub-operations";
-import { embedAssAttachment, parseKeyframeTimes, parseTimecodes as parseTimecodeFile, resampleAssDocument } from "./aegisub-tools";
+import { embedAssAttachment, estimateCueOverflow, parseKeyframeTimes, parseTimecodes as parseTimecodeFile, resampleAssDocument } from "./aegisub-tools";
 import { openStylingAssistant, openTranslationAssistant, type AssistantHandle } from "./aegisub-assistants";
 import { resolveAegisubContextHotkey, resolveAegisubDefaultHotkey, resolveAegisubOverrideHotkey, type AegisubHotkeyContext } from "./aegisub-hotkeys";
 import { listAutomationExtensions, runAutomationExtension } from "./automation";
@@ -91,10 +91,12 @@ import { computeSpectrum, type SpectrumData, type SpectrumViewport } from "./spe
 import { createDummyVideoPlayer, parseDummyFrameRate, type DummyVideoElement, type DummyVideoOptions } from "./dummy-video";
 import {
   openExportDialog,
+  openJumpToDialog,
   openPasteOverDialog,
   openSelectLinesDialog,
   openShiftTimesDialog,
   openStyleManagerDialog,
+  openStyleOverlapCheckDialog,
   openTimingPostProcessorDialog,
   type DialogHost,
 } from "./aegisub-dialogs";
@@ -327,6 +329,11 @@ class SubtitleEditor implements SubtitleEditorHandle {
   private frameIndexAbort: AbortController | null = null;
   private pendingVideoFrame: { frame: number; timeMs: number } | null = null;
   private dummyFrameCount = 0;
+  private posMode: "pos" | "move" = "pos";
+  private findCase = false;
+  private findRegex = false;
+  private findField: "text" | "style" | "actor" | "effect" = "text";
+  private gridSortState: { key: GridSortKey; asc: boolean } | null = null;
   private tagDisplayMode: "show" | "hide" | "simplify" = "simplify";
   private playRangeStop: (() => void) | null = null;
   private lastVideoPointer: { x: number; y: number } | null = null;
@@ -1315,7 +1322,27 @@ class SubtitleEditor implements SubtitleEditorHandle {
       num: "#", layer: "L", start: t("colStart"), end: t("colEnd"), cps: "CPS", style: "Style",
       actor: "Actor", effect: "Effect", "margin-l": "Left", "margin-r": "Right", "margin-v": "Vert", text: t("colText"),
     };
-    for (const column of this.gridColumns) this.headEl.appendChild(el("div", `se-cell se-${column}`, labels[column]));
+    const sortable: Partial<Record<GridColumnKey, GridSortKey>> = {
+      layer: "layer", start: "start", end: "end", style: "style", actor: "actor", effect: "effect",
+    };
+    for (const column of this.gridColumns) {
+      const sortKey = sortable[column];
+      const activeArrow = sortKey && this.gridSortState?.key === sortKey ? (this.gridSortState.asc ? " ↑" : " ↓") : "";
+      const cell = el("div", `se-cell se-${column}`, labels[column] + activeArrow);
+      if (sortKey) {
+        cell.style.cursor = "pointer";
+        cell.title = `Sort by ${labels[column]}`;
+        cell.addEventListener("click", () => {
+          const asc = this.gridSortState?.key === sortKey ? !this.gridSortState.asc : true;
+          this.gridSortState = { key: sortKey, asc };
+          let sorted = sortCueGrid(this.doc.cues, sortKey);
+          if (!asc) sorted = sorted.reverse();
+          this.applyCueList(sorted, [...this.selectedIds], `sorted by ${sortKey}`);
+          this.renderListHead();
+        });
+      }
+      this.headEl.appendChild(cell);
+    }
   }
 
   private makeRow(cue: Cue): HTMLDivElement {
@@ -1649,13 +1676,16 @@ class SubtitleEditor implements SubtitleEditorHandle {
 
   private cpsInfoEl: HTMLElement | null = null;
 
-  // Show the selected cue's reading speed and visible-character count, coloured like the list.
+  // Show the selected cue's reading speed, visible-character count, and horizontal overflow warning.
   private updateCpsInfo(cue: Cue): void {
     if (!this.cpsInfoEl) return;
     const c = cps(cue);
     const chars = visibleText(cue.text).length;
-    this.cpsInfoEl.textContent = t("cpsChars", { cps: c ? c.toFixed(0) : "0", chars: String(chars) });
-    this.cpsInfoEl.className = "se-cpsinfo" + (c > CPS_BAD ? " bad" : c > CPS_WARN ? " warn" : "");
+    const index = this.doc.cues.findIndex((item) => item.id === cue.id);
+    const overflow = cue.assKind !== "Comment" && index >= 0 ? estimateCueOverflow(cue, this.doc, index) : null;
+    const baseText = t("cpsChars", { cps: c ? c.toFixed(0) : "0", chars: String(chars) });
+    this.cpsInfoEl.textContent = overflow ? `${baseText} · ⚠ overflow` : baseText;
+    this.cpsInfoEl.className = "se-cpsinfo" + (c > CPS_BAD || overflow ? " bad" : c > CPS_WARN ? " warn" : "");
   }
 
   // --- colours (whole-cue \1c fill / \3c border / \4c shadow-or-box) --------
@@ -1905,11 +1935,19 @@ class SubtitleEditor implements SubtitleEditorHandle {
     return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
   }
 
-  private togglePosition(cue: Cue): void {
+  private renderPositionGuides: (() => void) | null = null;
+
+  private togglePosition(cue: Cue, requestedMode?: "pos" | "move"): void {
     if (this.posOverlay) {
+      if (requestedMode && requestedMode !== this.posMode) {
+        this.posMode = requestedMode;
+        this.renderPositionGuides?.();
+        return;
+      }
       this.exitPosition();
       return;
     }
+    this.posMode = requestedMode ?? (/\\move\(/.test(cue.text) ? "move" : "pos");
     if (this.clipOverlay) this.exitClip();
     if (this.drawOverlay) this.exitDraw();
     if (!this.video) {
@@ -1926,26 +1964,123 @@ class SubtitleEditor implements SubtitleEditorHandle {
     ov.style.top = `${cr.top - rr.top}px`;
     ov.style.width = `${cr.width}px`;
     ov.style.height = `${cr.height}px`;
-    // Click sets a static \pos; drag turns it into a \move (the line animates from where
-    // you pressed to where you release). The subtitle follows the cursor live during drag.
-    let down: { x: number; y: number; moved: boolean } | null = null;
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.style.position = "absolute";
+    svg.style.inset = "0";
+    svg.style.width = "100%";
+    svg.style.height = "100%";
+    svg.style.pointerEvents = "none";
+
+    const readout = el("div", "se-posreadout");
+    readout.style.position = "absolute";
+    readout.style.top = "8px";
+    readout.style.left = "8px";
+    readout.style.padding = "3px 8px";
+    readout.style.borderRadius = "6px";
+    readout.style.background = "rgba(15, 23, 42, 0.8)";
+    readout.style.color = "#fff";
+    readout.style.font = "11px ui-monospace, monospace";
+    readout.style.pointerEvents = "none";
+
     const cur = () => this.doc.cues.find((k) => k.id === this.positionCueId);
-    ov.addEventListener("pointerdown", (e) => {
-      down = { x: e.clientX, y: e.clientY, moved: false };
-      ov.setPointerCapture(e.pointerId);
+    const playToOverlay = (px: number, py: number) => {
+      const res = getPlayRes(this.doc);
+      return {
+        x: (px / Math.max(1, res.x)) * (ov.clientWidth || cr.width),
+        y: (py / Math.max(1, res.y)) * (ov.clientHeight || cr.height),
+      };
+    };
+
+    const drawGuides = () => {
       const c = cur();
-      if (c) this.setCuePosition(c, e.clientX, e.clientY);
+      svg.replaceChildren();
+      if (!c) return;
+      const moveMatch = c.text.match(/\\move\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)/);
+      const posMatch = c.text.match(/\\pos\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)/);
+      const ns = "http://www.w3.org/2000/svg";
+      const mk = (tag: string, attrs: Record<string, string | number>) => {
+        const elSvg = document.createElementNS(ns, tag);
+        for (const [k, v] of Object.entries(attrs)) elSvg.setAttribute(k, String(v));
+        svg.append(elSvg);
+        return elSvg;
+      };
+      if (moveMatch) {
+        const x1 = Number(moveMatch[1]), y1 = Number(moveMatch[2]), x2 = Number(moveMatch[3]), y2 = Number(moveMatch[4]);
+        const p1 = playToOverlay(x1, y1);
+        const p2 = playToOverlay(x2, y2);
+        mk("line", { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, stroke: "#60a5fa", "stroke-width": 2, "stroke-dasharray": "5 3" });
+        mk("circle", { cx: p1.x, cy: p1.y, r: 6, fill: "#3b82f6", stroke: "#fff", "stroke-width": 1.5 });
+        mk("circle", { cx: p2.x, cy: p2.y, r: 6, fill: "#f59e0b", stroke: "#fff", "stroke-width": 1.5 });
+        readout.textContent = `\\move(${Math.round(x1)},${Math.round(y1)} → ${Math.round(x2)},${Math.round(y2)})`;
+      } else if (posMatch) {
+        const px = Number(posMatch[1]), py = Number(posMatch[2]);
+        const p = playToOverlay(px, py);
+        mk("line", { x1: p.x - 10, y1: p.y, x2: p.x + 10, y2: p.y, stroke: "#fff", "stroke-width": 1.5 });
+        mk("line", { x1: p.x, y1: p.y - 10, x2: p.x, y2: p.y + 10, stroke: "#fff", "stroke-width": 1.5 });
+        mk("circle", { cx: p.x, cy: p.y, r: 5, fill: "rgba(59,130,246,0.7)", stroke: "#fff", "stroke-width": 1.5 });
+        readout.textContent = `\\pos(${Math.round(px)},${Math.round(py)})`;
+      } else {
+        readout.textContent = this.posMode === "move" ? "Drag to set \\move(x1,y1,x2,y2)" : "Click to set \\pos(x,y)";
+      }
+      hint.textContent = this.posMode === "move" ? t("moveHint") : t("positionPick");
+    };
+    this.renderPositionGuides = drawGuides;
+
+    let dragState: { kind: "new" | "move-start" | "move-end"; x: number; y: number; otherPx?: number; otherPy?: number; moved: boolean } | null = null;
+    ov.addEventListener("pointerdown", (e) => {
+      const c = cur();
+      const moveMatch = c?.text.match(/\\move\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)/);
+      if (moveMatch && c) {
+        const r = ov.getBoundingClientRect();
+        const lx = e.clientX - r.left, ly = e.clientY - r.top;
+        const p1 = playToOverlay(Number(moveMatch[1]), Number(moveMatch[2]));
+        const p2 = playToOverlay(Number(moveMatch[3]), Number(moveMatch[4]));
+        if (Math.hypot(lx - p1.x, ly - p1.y) <= 12) {
+          dragState = { kind: "move-start", x: e.clientX, y: e.clientY, otherPx: Number(moveMatch[3]), otherPy: Number(moveMatch[4]), moved: true };
+          ov.setPointerCapture(e.pointerId);
+          return;
+        }
+        if (Math.hypot(lx - p2.x, ly - p2.y) <= 12) {
+          dragState = { kind: "move-end", x: e.clientX, y: e.clientY, otherPx: Number(moveMatch[1]), otherPy: Number(moveMatch[2]), moved: true };
+          ov.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+      dragState = { kind: "new", x: e.clientX, y: e.clientY, moved: this.posMode === "move" };
+      ov.setPointerCapture(e.pointerId);
+      if (c && this.posMode === "pos") {
+        this.setCuePosition(c, e.clientX, e.clientY);
+        drawGuides();
+      }
     });
     ov.addEventListener("pointermove", (e) => {
-      if (!down || !(e.buttons & 1)) return;
-      if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) down.moved = true;
       const c = cur();
-      if (c) this.setCuePosition(c, e.clientX, e.clientY); // live follow
+      const pt = this.clientToPlayRes(e.clientX, e.clientY);
+      if (pt && !dragState) readout.textContent = `${pt.px}, ${pt.py}`;
+      if (!dragState || !(e.buttons & 1) || !c) return;
+      if (dragState.kind === "move-start" && pt) {
+        this.applyCueTag(c, `\\move(${pt.px},${pt.py},${Math.round(dragState.otherPx!)},${Math.round(dragState.otherPy!)})`);
+        drawGuides();
+        return;
+      }
+      if (dragState.kind === "move-end" && pt) {
+        this.applyCueTag(c, `\\move(${Math.round(dragState.otherPx!)},${Math.round(dragState.otherPy!)},${pt.px},${pt.py})`);
+        drawGuides();
+        return;
+      }
+      if (Math.hypot(e.clientX - dragState.x, e.clientY - dragState.y) > 4) dragState.moved = true;
+      if (dragState.moved) this.setCueMove(c, dragState.x, dragState.y, e.clientX, e.clientY);
+      else this.setCuePosition(c, e.clientX, e.clientY);
+      drawGuides();
     });
     ov.addEventListener("pointerup", (e) => {
       const c = cur();
-      if (down && down.moved && c) this.setCueMove(c, down.x, down.y, e.clientX, e.clientY);
-      down = null;
+      if (dragState && dragState.kind === "new" && dragState.moved && c && (Math.hypot(e.clientX - dragState.x, e.clientY - dragState.y) > 4)) {
+        this.setCueMove(c, dragState.x, dragState.y, e.clientX, e.clientY);
+      }
+      dragState = null;
+      drawGuides();
     });
     // Explicit "Done" affordance (plus Esc and the toolbar toggle) to leave the mode.
     const done = document.createElement("button");
@@ -1954,9 +2089,10 @@ class SubtitleEditor implements SubtitleEditorHandle {
     done.addEventListener("pointerdown", (e) => e.stopPropagation());
     done.addEventListener("click", () => this.exitPosition());
     const hint = el("div", "se-poshint", t("moveHint"));
-    ov.append(done, hint);
+    ov.append(svg, readout, done, hint);
     this.rightEl.appendChild(ov);
     this.posOverlay = ov;
+    drawGuides();
     document.addEventListener("keydown", this.onPosKey, true);
     this.renderDetail(); // highlight the toggle
   }
@@ -1972,6 +2108,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     document.removeEventListener("keydown", this.onPosKey, true);
     this.posOverlay?.remove();
     this.posOverlay = null;
+    this.renderPositionGuides = null;
     this.positionCueId = null;
     this.renderDetail();
   }
@@ -1988,8 +2125,13 @@ class SubtitleEditor implements SubtitleEditorHandle {
   }
 
   private applyCueTag(cue: Cue, tag: string): void {
-    const stripped = cue.text.replace(/\\(pos|move)\([^)]*\)/g, "").replace(/\{\}/g, "");
-    cue.text = `{${tag}}` + stripped;
+    const mMove = tag.match(/^\\move\((.*)\)$/);
+    const mPos = tag.match(/^\\pos\((.*)\)$/);
+    cue.text = mMove
+      ? setVisualTags(cue.text, { move: `(${mMove[1]})` })
+      : mPos
+        ? setVisualTags(cue.text, { pos: `(${mPos[1]})` })
+        : `{${tag}}${cue.text.replace(/\\(pos|move)\([^)]*\)/g, "").replace(/\{\}/g, "")}`;
     if (this.detailTextarea) this.detailTextarea.value = cue.text;
     this.refreshRow(cue.id);
     this.markDirty();
@@ -2028,6 +2170,19 @@ class SubtitleEditor implements SubtitleEditorHandle {
     ov.style.height = `${cr.height}px`;
     const band = el("div", "se-cliprect");
     band.style.display = "none";
+    const existingClip = cue.text.match(/\\(i?clip)\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)/i);
+    if (existingClip) {
+      const res = getPlayRes(this.doc);
+      const x1 = (Math.min(Number(existingClip[2]), Number(existingClip[4])) / Math.max(1, res.x)) * cr.width;
+      const y1 = (Math.min(Number(existingClip[3]), Number(existingClip[5])) / Math.max(1, res.y)) * cr.height;
+      const x2 = (Math.max(Number(existingClip[2]), Number(existingClip[4])) / Math.max(1, res.x)) * cr.width;
+      const y2 = (Math.max(Number(existingClip[3]), Number(existingClip[5])) / Math.max(1, res.y)) * cr.height;
+      band.style.display = "block";
+      band.style.left = `${x1}px`;
+      band.style.top = `${y1}px`;
+      band.style.width = `${Math.max(1, x2 - x1)}px`;
+      band.style.height = `${Math.max(1, y2 - y1)}px`;
+    }
     let inverse = /\\iclip\(/.test(cue.text);
     const bar = el("div", "se-posbar");
     const inv = document.createElement("button");
@@ -2095,8 +2250,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
     const b = this.clientToPlayRes(Math.max(x1, x2), Math.max(y1, y2));
     if (!a || !b) return;
     const tag = inverse ? "iclip" : "clip";
-    const stripped = cue.text.replace(/\\i?clip\([^)]*\)/g, "").replace(/\{\}/g, "");
-    cue.text = `{\\${tag}(${a.px},${a.py},${b.px},${b.py})}` + stripped;
+    cue.text = setVisualTags(cue.text, { [tag]: `(${a.px},${a.py},${b.px},${b.py})` });
     if (this.detailTextarea) this.detailTextarea.value = cue.text;
     this.refreshRow(cue.id);
     this.markDirty();
@@ -3335,6 +3489,33 @@ class SubtitleEditor implements SubtitleEditorHandle {
     repl.className = "se-findinput";
     repl.setAttribute("aria-label", t("replace"));
     this.findReplaceInput = repl;
+    const fieldSel = document.createElement("select");
+    fieldSel.className = "se-inalign";
+    fieldSel.setAttribute("aria-label", "Search field");
+    for (const [val, lbl] of [["text", "Text"], ["style", "Style"], ["actor", "Actor"], ["effect", "Effect"]] as const) {
+      fieldSel.append(new Option(lbl, val));
+    }
+    fieldSel.value = this.findField;
+    fieldSel.addEventListener("change", () => {
+      this.findField = fieldSel.value as "text" | "style" | "actor" | "effect";
+      this.runFind(find.value);
+    });
+    const caseBtn = this.button("Aa", () => {
+      this.findCase = !this.findCase;
+      caseBtn.classList.toggle("on", this.findCase);
+      this.runFind(find.value);
+    });
+    caseBtn.className = "se-obtn" + (this.findCase ? " on" : "");
+    caseBtn.title = "Match case";
+    const regexBtn = this.button(".*", () => {
+      this.findRegex = !this.findRegex;
+      regexBtn.classList.toggle("on", this.findRegex);
+      this.runFind(find.value);
+    });
+    regexBtn.className = "se-obtn" + (this.findRegex ? " on" : "");
+    regexBtn.title = "Regular expression";
+    const replOne = this.button("Replace", () => this.replaceCurrent());
+    replOne.className = "se-obtn";
     const replAll = this.button(t("replaceAll"), () => this.replaceAll());
     replAll.className = "se-obtn";
     const close = this.button("✕", () => this.closeFind());
@@ -3357,7 +3538,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
         this.closeFind();
       }
     });
-    bar.append(find, count, prev, next, repl, replAll, close);
+    bar.append(find, count, prev, next, fieldSel, caseBtn, regexBtn, repl, replOne, replAll, close);
     this.findBar = bar;
     (this.jobStrip ?? this.trackBar).after(bar);
     find.focus();
@@ -3372,8 +3553,37 @@ class SubtitleEditor implements SubtitleEditorHandle {
     this.findPos = -1;
   }
 
+  private getFindTarget(cue: Cue): string {
+    if (this.findField === "style") return cue.assFields?.Style ?? "";
+    if (this.findField === "actor") return cue.assFields?.Name ?? "";
+    if (this.findField === "effect") return cue.assFields?.Effect ?? "";
+    return cue.text;
+  }
+
+  private setFindTarget(cue: Cue, value: string): void {
+    if (this.findField === "text") { cue.text = value; return; }
+    const key = this.findField === "style" ? "Style" : this.findField === "actor" ? "Name" : "Effect";
+    (cue.assFields ??= {})[key] = value;
+  }
+
+  private buildFindRegex(query: string, global: boolean): RegExp | null {
+    if (!query) return null;
+    const flags = `${global ? "g" : ""}${this.findCase ? "" : "i"}`;
+    try {
+      const pattern = this.findRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(pattern, flags);
+    } catch {
+      return null;
+    }
+  }
+
   private runFind(query: string): void {
-    this.findMatches = matchCues(this.doc.cues, query);
+    if (this.findField === "text" && !this.findCase && !this.findRegex) {
+      this.findMatches = matchCues(this.doc.cues, query);
+    } else {
+      const rx = this.buildFindRegex(query, false);
+      this.findMatches = rx ? this.doc.cues.filter((c) => rx.test(this.getFindTarget(c))).map((c) => c.id) : [];
+    }
     this.findPos = this.findMatches.length ? 0 : -1;
     this.updateFindCount();
     if (this.findPos >= 0) this.select(this.findMatches[0]);
@@ -3395,11 +3605,53 @@ class SubtitleEditor implements SubtitleEditorHandle {
         : "";
   }
 
+  private replaceCurrent(): void {
+    const q = this.findInput?.value ?? "";
+    if (!q || this.findPos < 0 || !this.findMatches.length) return;
+    const targetId = this.findMatches[this.findPos];
+    const cue = this.doc.cues.find((c) => c.id === targetId);
+    const rx = this.buildFindRegex(q, false);
+    if (!cue || !rx) return;
+    const repl = this.findReplaceInput?.value ?? "";
+    const curVal = this.getFindTarget(cue);
+    const nextVal = curVal.replace(rx, repl);
+    if (nextVal !== curVal) {
+      this.setFindTarget(cue, nextVal);
+      this.renderList();
+      this.refreshRow(cue.id);
+      this.renderDetail();
+      this.markDirty();
+      this.toast(t("replacedN", { n: "1" }));
+    }
+    const prevPos = this.findPos;
+    this.runFind(q);
+    if (this.findMatches.length) {
+      this.findPos = Math.min(prevPos, this.findMatches.length - 1);
+      this.updateFindCount();
+      this.select(this.findMatches[this.findPos]);
+    }
+  }
+
   private replaceAll(): void {
     const q = this.findInput?.value ?? "";
     if (!q) return;
     const repl = this.findReplaceInput?.value ?? "";
-    const n = replaceAllInCues(this.doc.cues, q, repl);
+    let n = 0;
+    if (this.findField === "text" && !this.findCase && !this.findRegex) {
+      n = replaceAllInCues(this.doc.cues, q, repl);
+    } else {
+      const rx = this.buildFindRegex(q, true);
+      if (rx) {
+        for (const c of this.doc.cues) {
+          const curVal = this.getFindTarget(c);
+          const nextVal = curVal.replace(rx, repl);
+          if (nextVal !== curVal) {
+            this.setFindTarget(c, nextVal);
+            n += 1;
+          }
+        }
+      }
+    }
     if (n) {
       this.renderList();
       if (this.selectedId) this.refreshRow(this.selectedId);
@@ -3481,18 +3733,30 @@ class SubtitleEditor implements SubtitleEditorHandle {
     }
   }
 
-  // Localize the pure problem list (findProblems) into rows the panel renders.
+  // Localize the pure problem list (findProblems + horizontal overflow) into rows the panel renders.
   private computeProblems(): { id: string; index: number; msg: string }[] {
     const msgFor: Record<ProblemKind, (cps?: number) => string> = {
       overlap: () => t("probOverlap"),
       tooFast: (c) => t("probTooFast", { cps: (c ?? 0).toFixed(0) }),
       tooLong: () => t("probTooLong"),
     };
-    return findProblems(this.doc.cues, { cpsBad: CPS_BAD, maxDurMs: 7000 }).map((p) => ({
+    const list = findProblems(this.doc.cues, { cpsBad: CPS_BAD, maxDurMs: 7000 }).map((p) => ({
       id: p.id,
       index: p.index,
       msg: msgFor[p.kind](p.cps),
     }));
+    this.doc.cues.forEach((cue, index) => {
+      if (cue.assKind === "Comment") return;
+      const issue = estimateCueOverflow(cue, this.doc, index);
+      if (issue) {
+        list.push({
+          id: cue.id,
+          index,
+          msg: `Horizontal overflow (~${Math.round(issue.estimatedWidth)}px > ${Math.round(issue.availableWidth)}px)`,
+        });
+      }
+    });
+    return list;
   }
 
   private shiftTimes(): void {
@@ -5253,6 +5517,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
         const overlaps = findStyleOverlaps(this.doc.cues);
         if (overlaps.length) this.setSelection([overlaps[0].firstId, overlaps[0].secondId], overlaps[0].secondId);
         this.toast(overlaps.length ? `${overlaps.length} style overlap(s)` : "No style overlaps.");
+        openStyleOverlapCheckDialog(this.dialogHost());
         return true;
       }
       case "tool/text/cleanup":
@@ -5386,8 +5651,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "video/jump/start": if (selectedCue) this.seekTo(selectedCue.startMs); return true;
       case "video/jump/end": if (selectedCue) this.seekTo(selectedCue.endMs); return true;
       case "video/jump": {
-        const answer = prompt("Jump to time in seconds:", String((this.video?.currentTime ?? 0).toFixed(3)));
-        if (answer != null && Number.isFinite(Number(answer))) this.seekTo(Number(answer) * 1000);
+        openJumpToDialog(this.dialogHost(), playhead, (ms) => this.seekTo(ms));
         return true;
       }
       case "video/frame/next": this.seekVideoFrame(1); return true;
@@ -5425,7 +5689,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "video/focus_seek": this.video?.focus(); return true;
       case "video/opt/autoscroll": this.toggleFollow(); return true;
       case "video/show_overscan": this.toggleOverscan(); return true;
-      case "video/tool/cross": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue) this.togglePosition(selectedCue); return true;
+      case "video/tool/cross": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue) this.togglePosition(selectedCue, "pos"); return true;
       case "video/tool/clip": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue) this.toggleClip(selectedCue); return true;
       case "video/tool/vector_clip": this.setMobilePane("video"); this.activateVideoTool(command); this.openVectorClipMode("drag"); return true;
       case "video/tool/vclip/drag": this.setMobilePane("video"); this.openVectorClipMode("drag"); return true;
@@ -5436,7 +5700,7 @@ class SubtitleEditor implements SubtitleEditorHandle {
       case "video/tool/vclip/convert": this.vectorClip?.convert(); return true;
       case "video/tool/vclip/insert": this.vectorClip?.insert(); return true;
       case "video/tool/vclip/remove": this.vectorClip?.remove(); return true;
-      case "video/tool/drag": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue) this.togglePosition(selectedCue); return true;
+      case "video/tool/drag": this.setMobilePane("video"); this.activateVideoTool(command); if (selectedCue) this.togglePosition(selectedCue, "move"); return true;
       case "video/tool/rotate/z": this.setMobilePane("video"); this.activateVideoTool(command); this.openVisualTransform("rotate-z"); return true;
       case "video/tool/rotate/xy": this.setMobilePane("video"); this.activateVideoTool(command); this.openVisualTransform("rotate-xy"); return true;
       case "video/tool/scale": this.setMobilePane("video"); this.activateVideoTool(command); this.openVisualTransform("scale"); return true;
@@ -5448,7 +5712,15 @@ class SubtitleEditor implements SubtitleEditorHandle {
       }
       case "video/details": {
         if (!this.video) this.toast("No video loaded.");
-        else openVideoDetails(this.mediaFile ?? { name: this.root.dataset.mediaName ?? "空白视频", size: 0, type: "virtual/canvas" }, this.video, this.frameRate);
+        else {
+          const isVfr = this.timecodesMs.length > 2 && new Set(this.timecodesMs.slice(1, 30).map((tv, i) => Math.round(tv - this.timecodesMs[i]))).size > 2;
+          openVideoDetails(this.mediaFile ?? { name: this.root.dataset.mediaName ?? "空白视频", size: 0, type: "virtual/canvas" }, this.video, this.frameRate, {
+            timecodesCount: this.timecodesMs.length,
+            keyframesCount: this.frameKeyframes.length,
+            isVfr,
+            frameTimesCount: this.frameTimes.length,
+          });
+        }
         return true;
       }
       case "video/subtitles_provider/cycle":

@@ -53,6 +53,31 @@ describe("LRC", () => {
     expect(detectFormat("song.lrc", "")).toBe("lrc");
     expect(detectFormat(undefined, "[00:01.00]Hi")).toBe("lrc");
   });
+
+  it("parses Enhanced LRC word karaoke, trailing end markers, [offset], spacers and untimed fallback", () => {
+    const enhanced = [
+      "[00:10.00]<00:10.50>Hel<00:10.80>lo <00:11.20>world<00:12.00>",
+      "[00:23.05]",
+      "[00:24.00]<00:24.00><00:25.00>",
+      "[00:30.00]Next",
+      "[offset:+500]",
+    ].join("\n");
+    const doc = parseLrc(enhanced);
+    expect(doc.cues).toHaveLength(2);
+    expect(doc.cues[0].startMs).toBe(9500);
+    expect(doc.cues[0].endMs).toBe(11500);
+    expect(doc.cues[0].text).toBe("{\\k50}{\\kf30}Hel{\\kf40}lo {\\kf80}world");
+    expect(doc.cues[1].startMs).toBe(29500);
+
+    const untimed = parseLrc("Line A\nLine B\n");
+    expect(untimed.cues.map((c) => [c.startMs, c.endMs, c.text])).toEqual([
+      [0, 0, "Line A"],
+      [0, 0, "Line B"],
+    ]);
+
+    const reserialized = serializeLrc(parseLrc("[00:01.00]<00:01.00>Foo <00:01.50>bar<00:02.00>"));
+    expect(reserialized).toContain("<00:01.00>Foo <00:01.50>bar<00:02.00>");
+  });
 });
 
 describe("TTML / DFXP", () => {
@@ -86,6 +111,25 @@ describe("TTML / DFXP", () => {
     expect(detectFormat("x.ttml", "")).toBe("ttml");
     expect(detectFormat("x.dfxp", "")).toBe("ttml");
     expect(detectFormat(undefined, '<tt xmlns="...">')).toBe("ttml");
+  });
+
+  it("parses prefixed tt: tags, dur, word karaoke spans, nested wrappers and overlapping x-bg harmonies", () => {
+    const appleTtml = [
+      '<tt:tt xmlns:tt="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">',
+      "  <tt:body><tt:div>",
+      '    <tt:p begin="00:01.000" dur="4s"><tt:span begin="00:01.000" end="00:02.000">Lead </tt:span><tt:span begin="00:02.000" end="00:04.000">singing</tt:span><tt:span ttm:role="x-bg"><tt:span begin="00:02.500" end="00:04.500">(ooh)</tt:span></tt:span></tt:p>',
+      "    <tt:p>Untimed line</tt:p>",
+      "  </tt:div></tt:body>",
+      "</tt:tt>",
+    ].join("\n");
+    const doc = parseTtml(appleTtml);
+    expect(doc.cues).toHaveLength(3);
+    expect(doc.cues[0]).toMatchObject({ startMs: 0, endMs: 0, text: "Untimed line" });
+    expect(doc.cues[1].startMs).toBe(1000);
+    expect(doc.cues[1].endMs).toBe(5000);
+    expect(doc.cues[1].text).toBe("{\\kf100}Lead {\\kf200}singing");
+    expect(doc.cues[2].startMs).toBe(2500);
+    expect(doc.cues[2].text).toBe("{\\kf200}(ooh)");
   });
 });
 

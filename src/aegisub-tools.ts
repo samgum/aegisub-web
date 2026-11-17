@@ -70,6 +70,21 @@ export const DEFAULT_FIX_COMMON: FixCommonOptions = {
   maxDurationMs: 7000,
 };
 
+/**
+ * Mirrors samgum/Aegisub IsAssWhitespaceOnly: preserves template lines and vector drawings
+ * (\p1+), while treating lines with only override blocks, \N/\n/\h, ASCII space, or U+3000 as empty.
+ */
+export function isAssWhitespaceOnly(cue: Cue): boolean {
+  if ((cue.assFields?.Effect ?? "").trim().toLowerCase().startsWith("template")) return false;
+  if (/\{[^}]*\\p[1-9]\d*[^}]*\}/.test(cue.text)) return false;
+  const stripped = cue.text
+    .replace(/\{[^}]*\}/g, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\\(?:N|n|h)/g, "")
+    .replace(/[\s\u3000]+/gu, "");
+  return stripped.length === 0;
+}
+
 /** Browser port of samgum/Aegisub's opt-in Fix Common Subtitle Errors operation. */
 export function fixCommonErrors(
   source: SubtitleDoc,
@@ -138,7 +153,7 @@ export function fixCommonErrors(
   if (options.removeEmpty) {
     doc.cues = doc.cues.filter((cue) => {
       if (!inScope(cue, scope)) return true;
-      if (visibleText(cue.text) !== "") return true;
+      if (!isAssWhitespaceOnly(cue)) return true;
       report.emptyLines += 1;
       return false;
     });
@@ -152,6 +167,7 @@ export interface TextCleanupOptions {
   cleanFullwidthPeriods: boolean;
   replaceSmartQuotes: boolean;
   collapseDoubleSpaces: boolean;
+  checkDoubleSpaces?: boolean;
 }
 
 export interface TextCleanupReport {
@@ -161,6 +177,14 @@ export interface TextCleanupReport {
   periodsSpaced: number;
   quoteReplacements: number;
   doubleSpaceRuns: number;
+  checkedLines: number;
+  commaLines: number;
+  periodRemovedLines: number;
+  periodSpacedLines: number;
+  quoteLines: number;
+  doubleSpaceLines: number;
+  doubleSpaceFixedLines: number;
+  doubleSpaceRunsFixed: number;
 }
 
 export const DEFAULT_TEXT_CLEANUP: TextCleanupOptions = {
@@ -168,6 +192,7 @@ export const DEFAULT_TEXT_CLEANUP: TextCleanupOptions = {
   cleanFullwidthPeriods: true,
   replaceSmartQuotes: true,
   collapseDoubleSpaces: true,
+  checkDoubleSpaces: true,
 };
 
 function splitProtected(text: string): { protected: boolean; value: string }[] {
@@ -198,6 +223,14 @@ function cleanCueText(
   report: TextCleanupReport,
 ): string {
   const parts = splitProtected(text);
+  let hadComma = false;
+  let hadPeriodRemoved = false;
+  let hadPeriodSpaced = false;
+  let hadQuote = false;
+  let hadDoubleSpace = false;
+  let fixedDoubleSpace = false;
+  const checkSpaces = options.checkDoubleSpaces ?? true;
+
   for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
     const part = parts[partIndex];
     if (part.protected) continue;
@@ -207,32 +240,51 @@ function cleanCueText(
       if (options.replaceFullwidthCommas && character === "，") {
         output += " ";
         report.commaReplacements += 1;
+        hadComma = true;
       } else if (options.cleanFullwidthPeriods && character === "。") {
         const next = nextPlainCharacter(parts, partIndex, offset);
         if (next && next !== " ") {
           output += " ";
           report.periodsSpaced += 1;
+          hadPeriodSpaced = true;
         } else {
           report.periodsRemoved += 1;
+          hadPeriodRemoved = true;
         }
       } else if (options.replaceSmartQuotes && (character === "“" || character === "”")) {
         output += '"';
         report.quoteReplacements += 1;
+        hadQuote = true;
       } else if (options.replaceSmartQuotes && (character === "‘" || character === "’")) {
         output += "'";
         report.quoteReplacements += 1;
+        hadQuote = true;
       } else {
         output += character;
       }
     }
-    if (options.collapseDoubleSpaces) {
-      output = output.replace(/ {2,}/g, () => {
-        report.doubleSpaceRuns += 1;
-        return " ";
-      });
+    if (checkSpaces || options.collapseDoubleSpaces) {
+      const matches = output.match(/ {2,}/g);
+      if (matches?.length) {
+        hadDoubleSpace = true;
+        if (options.collapseDoubleSpaces) {
+          fixedDoubleSpace = true;
+          report.doubleSpaceRuns += matches.length;
+          report.doubleSpaceRunsFixed += matches.length;
+          output = output.replace(/ {2,}/g, " ");
+        } else {
+          report.doubleSpaceRuns += matches.length;
+        }
+      }
     }
     part.value = output;
   }
+  if (hadComma) report.commaLines += 1;
+  if (hadPeriodRemoved) report.periodRemovedLines += 1;
+  if (hadPeriodSpaced) report.periodSpacedLines += 1;
+  if (hadQuote) report.quoteLines += 1;
+  if (hadDoubleSpace) report.doubleSpaceLines += 1;
+  if (fixedDoubleSpace) report.doubleSpaceFixedLines += 1;
   return parts.map((part) => part.value).join("");
 }
 
@@ -249,9 +301,18 @@ export function cleanupSubtitleText(
     periodsSpaced: 0,
     quoteReplacements: 0,
     doubleSpaceRuns: 0,
+    checkedLines: 0,
+    commaLines: 0,
+    periodRemovedLines: 0,
+    periodSpacedLines: 0,
+    quoteLines: 0,
+    doubleSpaceLines: 0,
+    doubleSpaceFixedLines: 0,
+    doubleSpaceRunsFixed: 0,
   };
   for (const cue of doc.cues) {
     if (!inScope(cue, scope)) continue;
+    report.checkedLines += 1;
     const cleaned = cleanCueText(cue.text, options, report);
     if (cleaned !== cue.text) {
       cue.text = cleaned;
@@ -260,6 +321,8 @@ export function cleanupSubtitleText(
   }
   return { doc, report };
 }
+
+export const cleanSubtitleText = cleanupSubtitleText;
 
 export type ChineseDirection = "simplified" | "traditional";
 
@@ -353,24 +416,64 @@ export interface StitchReport {
   stitched: number;
 }
 
+export interface StitchTimingsOptions {
+  anchor?: "midpoint" | "previous" | "next";
+  unit?: "time" | "frames";
+  frameRate?: number;
+  timecodesMs?: readonly number[];
+}
+
+function frameIndexAtMs(ms: number, fps: number, timecodes?: readonly number[]): number {
+  if (timecodes?.length) {
+    let lo = 0;
+    let hi = timecodes.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (timecodes[mid] < ms) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0 && Math.abs(timecodes[lo - 1] - ms) <= Math.abs(timecodes[lo] - ms)) return lo - 1;
+    return lo;
+  }
+  return Math.round((ms * Math.max(1, fps)) / 1000);
+}
+
 export function stitchAdjacentTimings(
   source: SubtitleDoc,
-  maxDistanceMs: number,
+  maxDistance: number,
   scope?: ToolScope,
+  options?: StitchTimingsOptions,
 ): { doc: SubtitleDoc; report: StitchReport } {
   const doc = cloneDoc(source);
   const cues = sortCues(doc.cues.filter(isDialogue));
+  const anchor = options?.anchor ?? "midpoint";
+  const unit = options?.unit ?? "time";
+  const fps = options?.frameRate ?? source.fps ?? 23.976;
   let stitched = 0;
   for (let index = 0; index + 1 < cues.length; index += 1) {
     const current = cues[index];
     const next = cues[index + 1];
     if (!inScope(current, scope) && !inScope(next, scope)) continue;
-    const distance = next.startMs - current.endMs;
-    if (Math.abs(distance) > maxDistanceMs) continue;
-    const midpoint = Math.round((current.endMs + next.startMs) / 2);
-    if (inScope(current, scope) && midpoint > current.startMs) current.endMs = midpoint;
-    if (inScope(next, scope) && midpoint < next.endMs) next.startMs = midpoint;
-    stitched += 1;
+    const distance = unit === "frames"
+      ? Math.abs(frameIndexAtMs(next.startMs, fps, options?.timecodesMs) - frameIndexAtMs(current.endMs, fps, options?.timecodesMs))
+      : Math.abs(next.startMs - current.endMs);
+    if (distance > maxDistance) continue;
+    if (anchor === "previous") {
+      if (inScope(next, scope) && current.endMs < next.endMs) {
+        next.startMs = current.endMs;
+        stitched += 1;
+      }
+    } else if (anchor === "next") {
+      if (inScope(current, scope) && next.startMs > current.startMs) {
+        current.endMs = next.startMs;
+        stitched += 1;
+      }
+    } else {
+      const midpoint = Math.round((current.endMs + next.startMs) / 2);
+      if (inScope(current, scope) && midpoint > current.startMs) current.endMs = midpoint;
+      if (inScope(next, scope) && midpoint < next.endMs) next.startMs = midpoint;
+      stitched += 1;
+    }
   }
   return { doc, report: { stitched } };
 }
@@ -544,6 +647,15 @@ export interface LyricsScrollOptions {
   transitionMs: number;
   currentFontSize: number;
   otherFontSize: number;
+  resolutionPreset?: "script" | "4k" | "1080p" | "720p" | "1080x1920" | "720x1280" | "custom";
+  languageMode?: "single" | "bilingual";
+  secondaryStyle?: string;
+  sourceAction?: "keep" | "comment" | "delete";
+  clearPrevious?: boolean;
+  stripTags?: boolean;
+  preserveLineBreaks?: boolean;
+  animate?: boolean;
+  horizontalAlignment?: "left" | "center" | "right";
 }
 
 export const DEFAULT_LYRICS_SCROLL: LyricsScrollOptions = {
@@ -556,7 +668,39 @@ export const DEFAULT_LYRICS_SCROLL: LyricsScrollOptions = {
   transitionMs: 280,
   currentFontSize: 58,
   otherFontSize: 44,
+  resolutionPreset: "1080p",
+  languageMode: "single",
+  sourceAction: "delete",
+  clearPrevious: true,
+  stripTags: true,
+  preserveLineBreaks: false,
+  animate: true,
+  horizontalAlignment: "center",
 };
+
+function resolveLyricsResolution(
+  source: SubtitleDoc,
+  options: LyricsScrollOptions,
+): { width: number; height: number } {
+  switch (options.resolutionPreset) {
+    case "script": {
+      const res = getPlayRes(source);
+      return { width: res.x, height: res.y };
+    }
+    case "4k": return { width: 3840, height: 2160 };
+    case "1080p": return { width: 1920, height: 1080 };
+    case "720p": return { width: 1280, height: 720 };
+    case "1080x1920": return { width: 1080, height: 1920 };
+    case "720x1280": return { width: 720, height: 1280 };
+    default: return { width: options.width, height: options.height };
+  }
+}
+
+function cleanScrollText(text: string, stripTags: boolean, preserveLineBreaks: boolean): string {
+  let out = stripTags ? text.replace(/\{[^}]*\}/g, "") : text;
+  if (!preserveLineBreaks) out = out.replace(/\\N|\\n|\r?\n/g, " ");
+  return out.replace(/\s{2,}/g, " ").trim();
+}
 
 /** Generate a music-player-style stacked scrolling ASS project from the current cue timing. */
 export function generateLyricsScroll(
@@ -564,8 +708,36 @@ export function generateLyricsScroll(
   options: LyricsScrollOptions = DEFAULT_LYRICS_SCROLL,
 ): SubtitleDoc {
   const doc = source.format === "ass" ? cloneDoc(source) : convertDoc(source, "ass");
-  const resampled = resampleAssDocument(doc, options.width, options.height).doc;
-  const sourceCues = sortCues(resampled.cues.filter(isDialogue));
+  const targetRes = resolveLyricsResolution(doc, options);
+  const resampled = resampleAssDocument(doc, targetRes.width, targetRes.height).doc;
+  const clearPrevious = options.clearPrevious ?? true;
+  const sourceAction = options.sourceAction ?? "delete";
+  const stripTags = options.stripTags ?? true;
+  const preserveBreaks = options.preserveLineBreaks ?? false;
+  const animate = options.animate ?? true;
+  const alignment = options.horizontalAlignment ?? "center";
+  const anTag = alignment === "left" ? 4 : alignment === "right" ? 6 : 5;
+  const anchorX = alignment === "left"
+    ? Math.round(targetRes.width * 0.08)
+    : alignment === "right"
+      ? Math.round(targetRes.width * 0.92)
+      : Math.round(targetRes.width / 2);
+
+  const isGenerated = (cue: Cue): boolean =>
+    cue.assFields?.Name === "Aegisub Web Lyrics Scroll" || cue.text.includes("{sgmy-lyric-scroll}");
+
+  const allDialogue = sortCues(
+    resampled.cues.filter((cue) => isDialogue(cue) && (!clearPrevious || !isGenerated(cue))),
+  );
+  const secondaryStyle = options.secondaryStyle?.trim() || "";
+  const isBilingual = options.languageMode === "bilingual" && secondaryStyle !== "";
+  const primaryCues = isBilingual
+    ? allDialogue.filter((cue) => (cue.assFields?.Style ?? "") !== secondaryStyle)
+    : allDialogue;
+  const secondaryCues = isBilingual
+    ? allDialogue.filter((cue) => (cue.assFields?.Style ?? "") === secondaryStyle)
+    : [];
+
   const styles = (resampled.styles ??= []);
   const base = styles[0] ? structuredClone(styles[0]) : makeDefaultStyle("Default");
   const currentName = uniqueStyleName(resampled, "AegisubWeb Current");
@@ -574,38 +746,60 @@ export function generateLyricsScroll(
   currentStyle.name = currentName;
   currentStyle.fields.Fontsize = String(options.currentFontSize);
   currentStyle.fields.Bold = "-1";
-  currentStyle.fields.Alignment = "5";
+  currentStyle.fields.Alignment = String(anTag);
   currentStyle.fields.MarginL = currentStyle.fields.MarginR = currentStyle.fields.MarginV = "0";
   const otherStyle = structuredClone(base);
   otherStyle.name = otherName;
   otherStyle.fields.Fontsize = String(options.otherFontSize);
-  otherStyle.fields.Alignment = "5";
+  otherStyle.fields.Alignment = String(anTag);
   otherStyle.fields.MarginL = otherStyle.fields.MarginR = otherStyle.fields.MarginV = "0";
   styles.push(currentStyle, otherStyle);
 
-  const centerX = Math.round(options.width / 2);
+  const findTranslation = (cue: Cue): string => {
+    if (!secondaryCues.length) return "";
+    let best: Cue | null = null;
+    let bestScore = -1;
+    for (const candidate of secondaryCues) {
+      const overlap = Math.min(cue.endMs, candidate.endMs) - Math.max(cue.startMs, candidate.startMs);
+      const delta = Math.abs(cue.startMs - candidate.startMs);
+      if (overlap > 0 || delta <= 500) {
+        const score = overlap > 0 ? overlap + 10000 - delta : 5000 - delta;
+        if (score > bestScore) {
+          bestScore = score;
+          best = candidate;
+        }
+      }
+    }
+    return best ? cleanScrollText(best.text, stripTags, preserveBreaks) : "";
+  };
+
   const generated: Cue[] = [];
-  for (let stage = 0; stage < sourceCues.length; stage += 1) {
-    const stageStart = sourceCues[stage].startMs;
+  for (let stage = 0; stage < primaryCues.length; stage += 1) {
+    const stageStart = primaryCues[stage].startMs;
     const stageEnd = Math.max(
       stageStart + 100,
-      sourceCues[stage + 1]?.startMs ?? sourceCues[stage].endMs,
+      primaryCues[stage + 1]?.startMs ?? primaryCues[stage].endMs,
     );
     const first = Math.max(0, stage - options.before);
-    const last = Math.min(sourceCues.length - 1, stage + options.after);
+    const last = Math.min(primaryCues.length - 1, stage + options.after);
     for (let item = first; item <= last; item += 1) {
-      const sourceCue = sourceCues[item];
+      const sourceCue = primaryCues[item];
       const y = Math.round(options.currentY + (item - stage) * options.lineGap);
       const fromY = stage > 0 ? y + options.lineGap : y;
-      const motion = stage > 0 && options.transitionMs > 0
-        ? `\\move(${centerX},${fromY},${centerX},${y},0,${options.transitionMs})`
-        : `\\pos(${centerX},${y})`;
+      const motion = animate && stage > 0 && options.transitionMs > 0
+        ? `\\move(${anchorX},${fromY},${anchorX},${y},0,${options.transitionMs})`
+        : `\\pos(${anchorX},${y})`;
       const opacity = item < stage ? "\\alpha&H70&" : "";
+      const mainText = cleanScrollText(sourceCue.text, stripTags, preserveBreaks);
+      const subText = isBilingual ? findTranslation(sourceCue) : "";
+      const bodyText = subText
+        ? `${mainText}\\N{\\fs${Math.max(12, Math.round((item === stage ? options.currentFontSize : options.otherFontSize) * 0.72))}\\alpha&H30&}${subText}`
+        : mainText;
       generated.push({
         id: newCueId(),
         startMs: stageStart,
         endMs: stageEnd,
-        text: `{\\an5${motion}${opacity}\\fad(90,90)}${sourceCue.text}`,
+        text: `{\\an${anTag}${motion}${opacity}\\fad(90,90)}${bodyText}`,
         assKind: "Dialogue",
         assFields: {
           ...(sourceCue.assFields ?? {}),
@@ -620,7 +814,17 @@ export function generateLyricsScroll(
       });
     }
   }
-  resampled.cues = generated;
+
+  const remaining = resampled.cues.filter((cue) => !clearPrevious || !isGenerated(cue));
+  if (sourceAction === "keep") {
+    resampled.cues = [...remaining, ...generated];
+  } else if (sourceAction === "comment") {
+    const commented = remaining.map((cue) => (isDialogue(cue) ? { ...cue, assKind: "Comment" as const } : cue));
+    resampled.cues = [...commented, ...generated];
+  } else {
+    const nonDialogue = remaining.filter((cue) => !isDialogue(cue));
+    resampled.cues = [...nonDialogue, ...generated];
+  }
   return resampled;
 }
 
@@ -634,6 +838,116 @@ export interface FuriganaOptions {
   above: boolean;
   sizePercent: number;
   removeExisting: boolean;
+  kanaMode?: "hiragana" | "katakana";
+  outlinePercent?: number;
+  shadowPercent?: number;
+}
+
+export interface KanjiOccurrence {
+  rowIndex: number;
+  occurrenceIndex: number;
+  cueId: string;
+  kanji: string;
+  key: string;
+  contextText: string;
+}
+
+const KANJI_RUN_RE = /[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF々ヶ]+/gu;
+
+const COMMON_KANJI_READINGS: Record<string, string> = {
+  "東京": "とうきょう", "日本": "にほん", "世界": "せかい", "音楽": "おんがく",
+  "青春": "せいしゅん", "未来": "みらい", "希望": "きぼう", "友達": "ともだち",
+  "時間": "じかん", "場所": "ばしょ", "笑顔": "えがお", "涙": "なみだ",
+  "心": "こころ", "夢": "ゆめ", "空": "そら", "星": "ほし", "光": "ひかり",
+  "風": "かぜ", "雨": "あめ", "雪": "ゆき", "恋": "こい", "愛": "あい",
+  "君": "きみ", "僕": "ぼく", "私": "わたし", "彼女": "かのじょ", "彼": "かれ",
+  "今日": "きょう", "明日": "あした", "昨日": "きのう", "夜": "よる", "朝": "あさ",
+  "声": "こえ", "歌": "うた", "道": "みち", "手": "て", "目": "め",
+  "言葉": "ことば", "気持ち": "きもち", "約束": "やくそく", "記憶": "きおく",
+  "奇跡": "きせき", "季節": "きせつ", "瞬間": "しゅんかん", "永遠": "えいえん",
+  "運命": "うんめい", "勇気": "ゆうき", "秘密": "ひみつ", "物語": "ものがたり",
+  "学校": "がっこう", "先生": "せんせい", "教室": "きょうしつ", "夏": "なつ",
+  "冬": "ふゆ", "春": "はる", "秋": "あき", "花": "はな", "桜": "さくら",
+  "海": "うみ", "山": "やま", "街": "まち", "町": "まち", "家": "いえ",
+  "部屋": "へや", "窓": "まど", "扉": "とびら", "名前": "なまえ", "意味": "いみ",
+  "理由": "りゆう", "返事": "へんじ", "大丈夫": "だいじょうぶ", "本当": "ほんとう",
+  "毎日": "まいにち", "一緒": "いっしょ", "一人": "ひとり", "二人": "ふたり",
+  "子供": "こども", "大人": "おとな", "人間": "にんげん", "人生": "じんせい",
+  "幸せ": "しあわせ", "悲しみ": "かなしみ", "優しさ": "やさしさ", "強さ": "つよさ",
+  "行": "い", "来": "き", "見": "み", "聞": "き", "言": "い", "思": "おも",
+  "知": "し", "好": "す", "待": "ま", "信": "しん", "忘": "わす", "守": "まも",
+  "走": "はし", "歩": "ある", "飛": "と", "笑": "わら", "泣": "な", "歌う": "うたう",
+};
+
+export function convertKana(text: string, mode: "hiragana" | "katakana"): string {
+  let out = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (mode === "katakana" && code >= 0x3041 && code <= 0x3096) {
+      out += String.fromCodePoint(code + 0x60);
+    } else if (mode === "hiragana" && code >= 0x30a1 && code <= 0x30f6) {
+      out += String.fromCodePoint(code - 0x60);
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+export function extractKanjiOccurrences(source: SubtitleDoc, scope?: ToolScope): KanjiOccurrence[] {
+  const occurrences: KanjiOccurrence[] = [];
+  source.cues.forEach((cue, rowIndex) => {
+    if (!inScope(cue, scope)) return;
+    if (cue.assFields?.Name === "Aegisub Web Furigana" || cue.text.includes("{sgmy-furigana}")) return;
+    const plain = visibleText(cue.text);
+    if (!plain) return;
+    let occ = 0;
+    KANJI_RUN_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = KANJI_RUN_RE.exec(plain))) {
+      occ += 1;
+      occurrences.push({
+        rowIndex: rowIndex + 1,
+        occurrenceIndex: occ,
+        cueId: cue.id,
+        kanji: m[0],
+        key: `${rowIndex + 1}#${occ} ${m[0]}`,
+        contextText: plain,
+      });
+    }
+  });
+  return occurrences;
+}
+
+export function autoFillFuriganaReadings(
+  source: SubtitleDoc,
+  existingEntries: readonly FuriganaEntry[],
+  scope?: ToolScope,
+  kanaMode: "hiragana" | "katakana" = "hiragana",
+): FuriganaEntry[] {
+  const result = new Map<string, string>();
+  for (const entry of existingEntries) {
+    if (entry.base.trim() && entry.reading.trim()) {
+      result.set(entry.base.trim(), convertKana(entry.reading.trim(), kanaMode));
+    }
+  }
+  const seenKanji = new Set<string>();
+  for (const occ of extractKanjiOccurrences(source, scope)) {
+    if (seenKanji.has(occ.kanji)) continue;
+    seenKanji.add(occ.kanji);
+    if (result.has(occ.kanji)) continue;
+    const known = COMMON_KANJI_READINGS[occ.kanji];
+    if (known) {
+      result.set(occ.kanji, convertKana(known, kanaMode));
+    }
+  }
+  return [...result.entries()].map(([base, reading]) => ({ base, reading }));
+}
+
+function parseOccurrenceKey(rawBase: string): { rowIndex: number; occurrenceIndex: number; base: string } | null {
+  const m = rawBase.trim().match(/^@?(\d+)#(\d+)[\s#]+(.+)$/);
+  if (!m) return null;
+  return { rowIndex: Number(m[1]), occurrenceIndex: Number(m[2]), base: m[3].trim() };
 }
 
 /**
@@ -657,22 +971,49 @@ export function annotateFurigana(
     base.fields.Fontsize = String(Math.max(8, Math.round((Number(base.fields.Fontsize || 48) * options.sizePercent) / 100)));
     base.fields.Alignment = "2";
     base.fields.MarginL = base.fields.MarginR = base.fields.MarginV = "0";
+    if (options.outlinePercent != null) {
+      const outline = Math.max(0, Math.round(((Number(base.fields.Outline || 2) * options.outlinePercent) / 100) * 100) / 100);
+      base.fields.Outline = String(outline);
+    }
+    if (options.shadowPercent != null) {
+      const shadow = Math.max(0, Math.round(((Number(base.fields.Shadow || 0) * options.shadowPercent) / 100) * 100) / 100);
+      base.fields.Shadow = String(shadow);
+    }
     styles.push(base);
     styleMap.set(base.name, base);
     return base;
   })();
 
-  const entries = options.entries
-    .map((entry) => ({ base: entry.base.trim(), reading: entry.reading.trim() }))
-    .filter((entry) => entry.base && entry.reading)
-    .sort((a, b) => b.base.length - a.base.length);
+  const normalizeReading = (reading: string): string =>
+    options.kanaMode ? convertKana(reading.trim(), options.kanaMode) : reading.trim();
+
+  const specificEntries = new Map<string, { base: string; reading: string }>();
+  const globalEntries: { base: string; reading: string }[] = [];
+
+  for (const raw of options.entries) {
+    const base = raw.base.trim();
+    const reading = normalizeReading(raw.reading);
+    if (!base || !reading) continue;
+    const occ = parseOccurrenceKey(base);
+    if (occ) {
+      specificEntries.set(`${occ.rowIndex}#${occ.occurrenceIndex}#${occ.base}`, { base: occ.base, reading });
+    } else {
+      globalEntries.push({ base, reading });
+    }
+  }
+  globalEntries.sort((a, b) => b.base.length - a.base.length);
+
   const generated: Cue[] = [];
   let annotations = 0;
+  let sourceRowNumber = 0;
 
   for (const cue of doc.cues) {
-    if (options.removeExisting && cue.assFields?.Name === "Aegisub Web Furigana") continue;
+    const isRubyLine = cue.assFields?.Name === "Aegisub Web Furigana" || cue.text.includes("{sgmy-furigana}");
+    if (options.removeExisting && isRubyLine) continue;
     generated.push(cue);
-    if (!inScope(cue, scope) || cue.assFields?.Name === "Aegisub Web Furigana") continue;
+    if (isRubyLine) continue;
+    sourceRowNumber += 1;
+    if (!inScope(cue, scope)) continue;
 
     const plain = visibleText(cue.text);
     if (!plain) continue;
@@ -689,7 +1030,45 @@ export function annotateFurigana(
     const readingY = options.above ? baseY - fontSize * 0.9 : baseY + readingSize * 1.15;
 
     const occupied: [number, number][] = [];
-    for (const entry of entries) {
+
+    // First apply occurrence-specific readings (if any match kanji runs in this row).
+    if (specificEntries.size > 0) {
+      let occIdx = 0;
+      KANJI_RUN_RE.lastIndex = 0;
+      let km: RegExpExecArray | null;
+      while ((km = KANJI_RUN_RE.exec(plain))) {
+        occIdx += 1;
+        const spec = specificEntries.get(`${sourceRowNumber}#${occIdx}#${km[0]}`);
+        if (!spec) continue;
+        const index = km.index;
+        const end = index + km[0].length;
+        occupied.push([index, end]);
+        const prefixWidth = displayUnits(plain.slice(0, index)) * fontSize * scaleX;
+        const termWidth = displayUnits(km[0]) * fontSize * scaleX;
+        const x = Math.round((centerX - totalWidth / 2 + prefixWidth + termWidth / 2) * 100) / 100;
+        const y = Math.round(readingY * 100) / 100;
+        generated.push({
+          id: newCueId(),
+          startMs: cue.startMs,
+          endMs: cue.endMs,
+          text: `{sgmy-furigana}{\\an2\\pos(${x},${y})\\fs${readingSize}}${spec.reading}`,
+          assKind: "Dialogue",
+          assFields: {
+            ...(cue.assFields ?? {}),
+            Layer: String((Number(cue.assFields?.Layer || 0) || 0) + 1),
+            Style: rubyStyle.name,
+            Name: "Aegisub Web Furigana",
+            MarginL: "0",
+            MarginR: "0",
+            MarginV: "0",
+            Effect: "",
+          },
+        });
+        annotations += 1;
+      }
+    }
+
+    for (const entry of globalEntries) {
       let from = 0;
       while (from < plain.length) {
         const index = plain.indexOf(entry.base, from);
@@ -845,6 +1224,11 @@ export interface OverflowIssue {
   cueIndex: number;
   estimatedWidth: number;
   availableWidth: number;
+  reason?: "width" | "bounds" | "chars";
+}
+
+export interface OverflowOptions {
+  characterLimit?: number;
 }
 
 function displayUnits(text: string): number {
@@ -859,23 +1243,150 @@ function displayUnits(text: string): number {
   return units;
 }
 
-export function estimateOverflow(source: SubtitleDoc): OverflowIssue[] {
+const LEGACY_AN: Record<number, number> = { 1: 1, 2: 2, 3: 3, 5: 7, 6: 8, 7: 9, 9: 4, 10: 5, 11: 6 };
+
+function splitTopLevelTags(block: string): string[] {
+  const result: string[] = [];
+  let start = 0;
+  let depth = 0;
+  for (let i = 0; i < block.length; i += 1) {
+    const ch = block[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (ch === "\\" && depth === 0 && i > start) {
+      result.push(block.slice(start, i));
+      start = i;
+    }
+  }
+  if (start < block.length) result.push(block.slice(start));
+  return result;
+}
+
+export function estimateCueOverflow(
+  cue: Cue,
+  source: SubtitleDoc,
+  cueIndex: number,
+  options?: OverflowOptions,
+): OverflowIssue | null {
   const resolution = getPlayRes(source);
   const styles = new Map((source.styles ?? []).map((style) => [style.name, style]));
-  const fallback = source.styles?.[0];
+  const baseStyle = styles.get(cue.assFields?.Style ?? "") ?? source.styles?.[0];
+  const baseFs = Number(baseStyle?.fields.Fontsize ?? 42) || 42;
+  const baseScaleX = (Number(baseStyle?.fields.ScaleX ?? 100) || 100) / 100;
+  const baseSpacing = Number(baseStyle?.fields.Spacing ?? 0) || 0;
+  const baseOutline = Number(baseStyle?.fields.Outline ?? 0) || 0;
+  const baseShadow = Number(baseStyle?.fields.Shadow ?? 0) || 0;
+  const baseAn = Number(baseStyle?.fields.Alignment ?? 2) || 2;
+  const marginL = Number(cue.assFields?.MarginL || baseStyle?.fields.MarginL || 20) || 0;
+  const marginR = Number(cue.assFields?.MarginR || baseStyle?.fields.MarginR || 20) || 0;
+
+  let fs = baseFs;
+  let scaleX = baseScaleX;
+  let spacing = baseSpacing;
+  let outlineX = baseOutline;
+  let shadowX = baseShadow;
+  let alignment = baseAn;
+  let drawingLevel = 0;
+  const anchorXs: number[] = [];
+
+  const visualLines: { width: number; chars: number }[] = [{ width: 0, chars: 0 }];
+  const pushText = (chunk: string): void => {
+    if (drawingLevel > 0 || !chunk) return;
+    const normalized = chunk.replace(/\\h/g, " ").replace(/\r/g, "");
+    const parts = normalized.split(/\\[Nn]|\n/);
+    for (let i = 0; i < parts.length; i += 1) {
+      if (i > 0) visualLines.push({ width: 0, chars: 0 });
+      const segment = parts[i];
+      if (!segment) continue;
+      const units = displayUnits(segment);
+      const count = [...segment].length;
+      const line = visualLines[visualLines.length - 1];
+      line.width += units * fs * scaleX + count * spacing;
+      line.chars += count;
+    }
+  };
+
+  let cursor = 0;
+  for (const match of cue.text.matchAll(/\{([^}]*)\}/g)) {
+    const idx = match.index ?? 0;
+    if (idx > cursor) pushText(cue.text.slice(cursor, idx));
+    cursor = idx + match[0].length;
+    for (const tag of splitTopLevelTags(match[1])) {
+      const mPos = tag.match(/^\\pos\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/);
+      if (mPos) { anchorXs.push(Number(mPos[1])); continue; }
+      const mMove = tag.match(/^\\move\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
+      if (mMove) { anchorXs.push(Number(mMove[1]), Number(mMove[3])); continue; }
+      const mFs = tag.match(/^\\fs(\d+(?:\.\d+)?)/);
+      if (mFs) { fs = Number(mFs[1]) || baseFs; continue; }
+      const mScx = tag.match(/^\\fscx(\d+(?:\.\d+)?)/);
+      if (mScx) { scaleX = (Number(mScx[1]) || 100) / 100; continue; }
+      const mFsp = tag.match(/^\\fsp(-?\d+(?:\.\d+)?)/);
+      if (mFsp) { spacing = Number(mFsp[1]) || 0; continue; }
+      const mBord = tag.match(/^\\(?:bord|xbord)(\d+(?:\.\d+)?)/);
+      if (mBord) { outlineX = Number(mBord[1]) || 0; continue; }
+      const mShad = tag.match(/^\\(?:shad|xshad)(\d+(?:\.\d+)?)/);
+      if (mShad) { shadowX = Number(mShad[1]) || 0; continue; }
+      const mAn = tag.match(/^\\an([1-9])/);
+      if (mAn) { alignment = Number(mAn[1]); continue; }
+      const mA = tag.match(/^\\a(\d+)/);
+      if (mA && LEGACY_AN[Number(mA[1])]) { alignment = LEGACY_AN[Number(mA[1])]; continue; }
+      const mP = tag.match(/^\\p(\d+)/);
+      if (mP) { drawingLevel = Number(mP[1]); continue; }
+      const mReset = tag.match(/^\\r(.*)$/);
+      if (mReset) {
+        const targetStyle = styles.get(mReset[1].trim()) ?? baseStyle;
+        fs = Number(targetStyle?.fields.Fontsize ?? baseFs) || baseFs;
+        scaleX = (Number(targetStyle?.fields.ScaleX ?? 100) || 100) / 100;
+        spacing = Number(targetStyle?.fields.Spacing ?? baseSpacing) || baseSpacing;
+        outlineX = Number(targetStyle?.fields.Outline ?? baseOutline) || baseOutline;
+        shadowX = Number(targetStyle?.fields.Shadow ?? baseShadow) || baseShadow;
+        alignment = Number(targetStyle?.fields.Alignment ?? baseAn) || baseAn;
+        drawingLevel = 0;
+      }
+    }
+  }
+  if (cursor < cue.text.length) pushText(cue.text.slice(cursor));
+
+  const edgePad = Math.max(0, outlineX * 2 + shadowX);
+  const maxWidth = Math.max(0, ...visualLines.map((l) => (l.width > 0 ? l.width + edgePad : 0)));
+  const maxChars = Math.max(0, ...visualLines.map((l) => l.chars));
+
+  if (options?.characterLimit && options.characterLimit > 0 && maxChars > options.characterLimit) {
+    return { cueId: cue.id, cueIndex, estimatedWidth: maxChars, availableWidth: options.characterLimit, reason: "chars" };
+  }
+
+  if (anchorXs.length > 0 && maxWidth > 0) {
+    const col = (alignment - 1) % 3;
+    for (const ax of anchorXs) {
+      const boundLeft = col === 0 ? ax : col === 2 ? ax - maxWidth : ax - maxWidth / 2;
+      const boundRight = col === 0 ? ax + maxWidth : col === 2 ? ax : ax + maxWidth / 2;
+      if (boundLeft < -1 || boundRight > resolution.x + 1) {
+        const excess = Math.max(boundRight - resolution.x, -boundLeft, 0);
+        return {
+          cueId: cue.id,
+          cueIndex,
+          estimatedWidth: resolution.x + excess,
+          availableWidth: resolution.x,
+          reason: "bounds",
+        };
+      }
+    }
+    return null;
+  }
+
+  const availableWidth = Math.max(1, resolution.x - marginL - marginR);
+  if (maxWidth > availableWidth * 1.02) {
+    return { cueId: cue.id, cueIndex, estimatedWidth: maxWidth, availableWidth, reason: "width" };
+  }
+  return null;
+}
+
+export function estimateOverflow(source: SubtitleDoc, options?: OverflowOptions): OverflowIssue[] {
   const issues: OverflowIssue[] = [];
   source.cues.forEach((cue, cueIndex) => {
     if (!isDialogue(cue)) return;
-    const style = styles.get(cue.assFields?.Style ?? "") ?? fallback;
-    const fontSize = Number(style?.fields.Fontsize ?? 42) || 42;
-    const scaleX = (Number(style?.fields.ScaleX ?? 100) || 100) / 100;
-    const marginL = Number(cue.assFields?.MarginL || style?.fields.MarginL || 20) || 0;
-    const marginR = Number(cue.assFields?.MarginR || style?.fields.MarginR || 20) || 0;
-    const availableWidth = Math.max(1, resolution.x - marginL - marginR);
-    const estimatedWidth = displayUnits(cue.text) * fontSize * scaleX;
-    if (estimatedWidth > availableWidth * 1.02) {
-      issues.push({ cueId: cue.id, cueIndex, estimatedWidth, availableWidth });
-    }
+    const issue = estimateCueOverflow(cue, source, cueIndex, options);
+    if (issue) issues.push(issue);
   });
   return issues;
 }

@@ -9,6 +9,7 @@ import {
   resampleAssDocument,
 } from "./aegisub-tools";
 import {
+  analyzeStyleOverlaps,
   pasteOverCues,
   postProcessTiming,
   selectCueIds,
@@ -289,6 +290,118 @@ export function openExportDialog(host: DialogHost): void {
     } else host.download(`export.${extension}`, [text], "text/plain;charset=utf-8");
     ui.close();
   }, true));
+}
+
+function msToClockCs(ms: number): string {
+  const totalCs = Math.max(0, Math.round(ms / 10));
+  const h = Math.floor(totalCs / 360000);
+  const m = Math.floor((totalCs % 360000) / 6000);
+  const s = Math.floor((totalCs % 6000) / 100);
+  const cc = totalCs % 100;
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cc).padStart(2, "0")}`;
+}
+
+export function openJumpToDialog(host: DialogHost, currentMs: number, onSeek: (ms: number) => void): void {
+  const ui = modal("Jump to Time / Frame · 跳转到时间/帧");
+  const timecodes = host.timecodes();
+  const fps = Math.max(1, host.frameRate() || 23.976);
+
+  const frameAt = (ms: number): number => {
+    if (timecodes.length) {
+      let lo = 0;
+      let hi = timecodes.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (timecodes[mid] < ms) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo > 0 && Math.abs(timecodes[lo - 1] - ms) <= Math.abs(timecodes[lo] - ms)) return lo - 1;
+      return lo;
+    }
+    return Math.max(0, Math.round((ms * fps) / 1000));
+  };
+
+  const msAt = (frame: number): number => {
+    const f = Math.max(0, Math.round(frame));
+    if (timecodes.length) return timecodes[Math.min(timecodes.length - 1, f)];
+    return Math.round((f * 1000) / fps);
+  };
+
+  const timeInput = element("input");
+  timeInput.type = "text";
+  timeInput.value = msToClockCs(currentMs);
+  const frameInput = numberInput(frameAt(currentMs), 0);
+
+  let syncing = false;
+  timeInput.addEventListener("input", () => {
+    if (syncing) return;
+    syncing = true;
+    const ms = parseTimeAmount(timeInput.value);
+    frameInput.value = String(frameAt(ms));
+    syncing = false;
+  });
+  frameInput.addEventListener("input", () => {
+    if (syncing) return;
+    syncing = true;
+    const f = Number(frameInput.value);
+    if (Number.isFinite(f)) timeInput.value = msToClockCs(msAt(f));
+    syncing = false;
+  });
+
+  const grid = element("div", "ad-grid");
+  grid.append(field("Time (H:MM:SS.cc)", timeInput), field(`Frame (${timecodes.length ? "VFR" : `${fps.toFixed(3)} fps`})`, frameInput));
+  ui.body.append(grid);
+
+  const commit = (): void => {
+    const f = Number(frameInput.value);
+    const ms = document.activeElement === frameInput && Number.isFinite(f)
+      ? msAt(f)
+      : parseTimeAmount(timeInput.value);
+    onSeek(Math.max(0, ms));
+    ui.close();
+  };
+  timeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+  frameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+  ui.foot.append(button("Cancel", ui.close), button("Jump", commit, true));
+  timeInput.focus();
+  timeInput.select();
+}
+
+export function openStyleOverlapCheckDialog(host: DialogHost): void {
+  const ui = modal("Same-Style Overlap Check / 同样式时间重叠检查");
+  const report = analyzeStyleOverlaps(host.getDoc().cues);
+  const reportArea = element("textarea");
+  reportArea.readOnly = true;
+  reportArea.rows = 10;
+  reportArea.value = report.reportText;
+
+  const pairsList = element("div", "ad-list");
+  if (!report.overlaps.length) {
+    pairsList.append(element("div", "ad-status", "No same-style timing overlaps found."));
+  } else {
+    for (const ov of report.overlaps) {
+      const btn = button(
+        `[${ov.style}] #${ov.firstRow ?? "?"} ↔ #${ov.secondRow ?? "?"} (${ov.category ?? "overlap"}, ${ov.overlapMs}ms)`,
+        () => host.setSelection([ov.firstId, ov.secondId]),
+      );
+      pairsList.append(btn);
+    }
+  }
+
+  ui.body.append(
+    element("h3", "", `Report (${report.totalOverlaps} overlapping pair(s))`),
+    reportArea,
+    element("h3", "", "Click pair to select in grid"),
+    pairsList,
+  );
+  ui.foot.append(
+    button("Select All Overlapping Lines", () => {
+      const ids = new Set<string>();
+      for (const ov of report.overlaps) { ids.add(ov.firstId); ids.add(ov.secondId); }
+      if (ids.size) host.setSelection([...ids]);
+    }),
+    button("Close", ui.close, true),
+  );
 }
 
 export { openNativeStyleManager as openStyleManagerDialog } from "./native-style-manager";

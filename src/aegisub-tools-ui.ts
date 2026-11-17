@@ -4,11 +4,13 @@ import {
   DEFAULT_LYRICS_SCROLL,
   DEFAULT_TEXT_CLEANUP,
   annotateFurigana,
+  autoFillFuriganaReadings,
   checkPairedPunctuation,
   cleanupSubtitleText,
   convertChinese,
   estimateOverflow,
   embedAssAttachment,
+  extractKanjiOccurrences,
   fixCommonErrors,
   generateLyricsScroll,
   listAssAttachments,
@@ -17,10 +19,13 @@ import {
   removeAssAttachment,
   snapToKeyframes,
   stitchAdjacentTimings,
+  type FuriganaEntry,
+  type StitchTimingsOptions,
   type ToolScope,
 } from "./aegisub-tools";
 import { listAutomationExtensions, removeAutomationExtension, runAutomationExtension, saveAutomationExtension } from "./automation";
 import { runLuaAutomation } from "./lua-automation";
+import { requestedFontFamilies } from "./preview-fonts";
 
 export interface AegisubToolboxHost {
   getDoc(): SubtitleDoc;
@@ -105,7 +110,7 @@ function card(title: string, description: string): HTMLDivElement {
   return result;
 }
 
-function scopeControl(host: AegisubToolboxHost): { label: HTMLLabelElement; value(): ToolScope | undefined } {
+function scopeControl(host: AegisubToolboxHost): { label: HTMLLabelElement; styleLabel: HTMLLabelElement; value(): ToolScope | undefined } {
   const label = node("label", "aw-field");
   label.append(document.createTextNode("范围 / Scope"));
   const select = node("select");
@@ -114,10 +119,39 @@ function scopeControl(host: AegisubToolboxHost): { label: HTMLLabelElement; valu
   selected.disabled = host.getSelectedIds().size === 0;
   select.append(selected);
   label.append(select);
+
+  const styleLabel = node("label", "aw-field");
+  styleLabel.append(document.createTextNode("限定样式 / Filter style"));
+  const styleSelect = node("select");
+  styleSelect.append(new Option("全部样式 / All styles", ""));
+  const names = new Set<string>((host.getDoc().styles ?? []).map((s) => s.name).filter(Boolean));
+  for (const cue of host.getDoc().cues) {
+    const sName = cue.assFields?.Style?.trim();
+    if (sName) names.add(sName);
+  }
+  for (const name of names) styleSelect.append(new Option(name, name));
+  styleLabel.append(styleSelect);
+
   return {
     label,
-    value: () => select.value === "selected" ? { selectedIds: new Set(host.getSelectedIds()) } : undefined,
+    styleLabel,
+    value: () => {
+      const selectedIds = select.value === "selected" ? new Set(host.getSelectedIds()) : undefined;
+      const style = styleSelect.value || undefined;
+      if (!selectedIds && !style) return undefined;
+      return { selectedIds, style };
+    },
   };
+}
+
+function selectControl(label: string, options: [string, string][], initial?: string): { label: HTMLLabelElement; select: HTMLSelectElement } {
+  const wrap = node("label", "aw-field");
+  wrap.append(document.createTextNode(label));
+  const sel = node("select");
+  for (const [val, text] of options) sel.append(new Option(text, val));
+  if (initial != null) sel.value = initial;
+  wrap.append(sel);
+  return { label: wrap, select: sel };
 }
 
 function reportCounts(value: Record<string, number>): string {
@@ -178,7 +212,7 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   }
 
   // Quality: common fixes.
-  const fixCard = card("修复常见错误 / Fix common errors", "与桌面版 SGMY 工具一致：每项独立启用，阈值可调。注释行不会被修改。");
+  const fixCard = card("修复常见错误 / Fix common errors", "与桌面版 SGMY 工具一致：每项独立启用，阈值可调。注释行、template 与绘图行会被保留。");
   const fixScope = scopeControl(host);
   const overlap = checkbox("裁掉重叠时间 / Trim overlaps", DEFAULT_FIX_COMMON.overlaps);
   const gaps = checkbox("建立最小间隔 / Fix short gaps", DEFAULT_FIX_COMMON.shortGaps);
@@ -192,7 +226,7 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   const fixChecks = node("div", "aw-grid two");
   fixChecks.append(overlap.row, gaps.row, short.row, long.row, empty.row, trailing.row);
   const fixFields = node("div", "aw-grid");
-  fixFields.append(fixScope.label, gapMs.label, minDuration.label, maxDuration.label);
+  fixFields.append(fixScope.label, fixScope.styleLabel, gapMs.label, minDuration.label, maxDuration.label);
   const fixStatus = node("span", "aw-status");
   const fixActions = node("div", "aw-actions");
   fixActions.append(button("执行修复 / Apply", () => {
@@ -214,15 +248,24 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   fixCard.append(fixChecks, fixFields, fixActions);
   qa.append(fixCard);
 
-  const pairCard = card("标点与溢出检查 / Punctuation & overflow", "检查成对标点，并按脚本分辨率、样式字号与边距估算横向溢出。结果可点击跳转。");
+  const pairCard = card("标点与溢出检查 / Punctuation & overflow", "检查成对标点，并按脚本分辨率、样式与行内标签（字号/缩放/边距/位置）估算溢出。结果可点击跳转。");
   const pairScope = scopeControl(host);
+  const pairCharLimit = numberField("最大单行字数 (0=关闭)", 0, 0, 500);
   const results = node("div", "aw-results");
   const pairStatus = node("span", "aw-status");
   const pairActions = node("div", "aw-actions");
-  pairActions.append(pairScope.label, button("检查 / Scan", () => {
+  pairActions.append(pairScope.label, pairScope.styleLabel, pairCharLimit.label, button("检查 / Scan", () => {
     results.textContent = "";
-    const punctuation = checkPairedPunctuation(host.getDoc(), pairScope.value());
-    const overflow = estimateOverflow(host.getDoc()).filter((issue) => !pairScope.value()?.selectedIds || pairScope.value()?.selectedIds?.has(issue.cueId));
+    const scopeVal = pairScope.value();
+    const punctuation = checkPairedPunctuation(host.getDoc(), scopeVal);
+    const charLimit = Number(pairCharLimit.input.value) || undefined;
+    const allOverflow = estimateOverflow(host.getDoc(), charLimit ? { characterLimit: charLimit } : undefined);
+    const cues = host.getDoc().cues;
+    const overflow = allOverflow.filter((issue) => {
+      if (scopeVal?.selectedIds && !scopeVal.selectedIds.has(issue.cueId)) return false;
+      if (scopeVal?.style && (cues[issue.cueIndex]?.assFields?.Style ?? "") !== scopeVal.style) return false;
+      return true;
+    });
     for (const issue of punctuation) {
       const row = node("button", "aw-result", `#${issue.cueIndex + 1} · ${issue.message}`);
       row.type = "button";
@@ -230,7 +273,10 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
       results.append(row);
     }
     for (const issue of overflow) {
-      const row = node("button", "aw-result", `#${issue.cueIndex + 1} · estimated ${Math.round(issue.estimatedWidth)}px > ${Math.round(issue.availableWidth)}px`);
+      const detail = issue.reason === "chars"
+        ? `chars ${Math.round(issue.estimatedWidth)} > ${Math.round(issue.availableWidth)}`
+        : `estimated ${Math.round(issue.estimatedWidth)}px > ${Math.round(issue.availableWidth)}px`;
+      const row = node("button", "aw-result", `#${issue.cueIndex + 1} · ${detail}`);
       row.type = "button";
       row.addEventListener("click", () => host.selectCue(issue.cueId));
       results.append(row);
@@ -241,18 +287,50 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   qa.append(pairCard);
 
   // Timing tools.
-  const stitchCard = card("拼接相邻时间 / Stitch timings", "当相邻字幕的边界距离在阈值内时，将结束与开始对齐到中点。");
+  const stitchCard = card("拼接相邻时间 / Stitch timings", "当相邻字幕的边界距离在阈值内时，支持按中点、前句结束或后句开始进行时间拼接（支持毫秒/帧）。");
   const stitchScope = scopeControl(host);
-  const stitchDistance = numberField("最大距离 ms", 150, 0, 2000);
+  const stitchUnit = selectControl("单位 / Unit", [["time", "Milliseconds (ms)"], ["frames", "Frames"]], "time");
+  const stitchAnchor = selectControl("对齐方式 / Anchor", [["midpoint", "中点 / Midpoint"], ["previous", "以前一句结束为基准 / Previous end"], ["next", "以后一句开始为基准 / Next start"]], "midpoint");
+  const stitchDistance = numberField("最大距离 (ms 或 帧)", 150, 0, 10000);
+  const stitchFps = numberField("帧率 FPS", host.getDoc().fps ?? 23.976, 1, 240);
+  stitchFps.input.step = "0.001";
+  const stitchFields = node("div", "aw-grid");
+  stitchFields.append(stitchScope.label, stitchScope.styleLabel, stitchUnit.label, stitchAnchor.label, stitchDistance.label, stitchFps.label);
   const stitchStatus = node("span", "aw-status");
+  const stitchHistoryKey = "aegisub-web.stitch-history";
+  type StitchHistEntry = { distance: number; unit: "time" | "frames"; anchor: "midpoint" | "previous" | "next"; fps: number; stitched: number };
+  const readStitchHistory = (): StitchHistEntry[] => {
+    try { return JSON.parse(localStorage.getItem(stitchHistoryKey) ?? "[]") as StitchHistEntry[]; } catch { return []; }
+  };
   const stitchActions = node("div", "aw-actions");
-  stitchActions.append(stitchScope.label, stitchDistance.label, button("拼接 / Stitch", () => {
-    const result = stitchAdjacentTimings(host.getDoc(), Number(stitchDistance.input.value), stitchScope.value());
+  const loadStitchHistoryBtn = button("读取上次参数 / Load history", () => {
+    const last = readStitchHistory()[0];
+    if (!last) { stitchStatus.textContent = "暂无拼接历史 / No stitch history"; return; }
+    stitchDistance.input.value = String(last.distance);
+    stitchUnit.select.value = last.unit;
+    stitchAnchor.select.value = last.anchor;
+    stitchFps.input.value = String(last.fps);
+    stitchStatus.textContent = `Loaded: ${last.distance} ${last.unit} (${last.anchor})`;
+  });
+  const clearStitchHistoryBtn = button("清除历史 / Clear", () => {
+    localStorage.removeItem(stitchHistoryKey);
+    stitchStatus.textContent = "已清除拼接历史 / Cleared stitch history";
+  });
+  stitchActions.append(button("拼接 / Stitch", () => {
+    const opts: StitchTimingsOptions = {
+      anchor: stitchAnchor.select.value as StitchTimingsOptions["anchor"],
+      unit: stitchUnit.select.value as StitchTimingsOptions["unit"],
+      frameRate: Number(stitchFps.input.value) || 23.976,
+    };
+    const dist = Number(stitchDistance.input.value);
+    const result = stitchAdjacentTimings(host.getDoc(), dist, stitchScope.value(), opts);
     const message = `stitched: ${result.report.stitched}`;
     host.applyDoc(result.doc, message);
     stitchStatus.textContent = message;
-  }, true), stitchStatus);
-  stitchCard.append(stitchActions);
+    const hist = [{ distance: dist, unit: opts.unit ?? "time", anchor: opts.anchor ?? "midpoint", fps: opts.frameRate ?? 23.976, stitched: result.report.stitched }, ...readStitchHistory()].slice(0, 20);
+    try { localStorage.setItem(stitchHistoryKey, JSON.stringify(hist)); } catch { /* ignore storage quota */ }
+  }, true), loadStitchHistoryBtn, clearStitchHistoryBtn, stitchStatus);
+  stitchCard.append(stitchFields, stitchActions);
   timing.append(stitchCard);
 
   const keyCard = card("关键帧吸附 / Snap to keyframes", "导入 Aegisub keyframes v1 或 timecodes v2 文本，将开始/结束吸附到阈值内最近帧。");
@@ -290,38 +368,48 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   const commas = checkbox("全角逗号转空格 / Fullwidth commas", DEFAULT_TEXT_CLEANUP.replaceFullwidthCommas);
   const periods = checkbox("清理全角句号 / Fullwidth periods", DEFAULT_TEXT_CLEANUP.cleanFullwidthPeriods);
   const quotes = checkbox("弯引号转直引号 / Smart quotes", DEFAULT_TEXT_CLEANUP.replaceSmartQuotes);
+  const checkSpaces = checkbox("检查连续空格 / Check double spaces", DEFAULT_TEXT_CLEANUP.checkDoubleSpaces ?? true);
   const spaces = checkbox("合并连续空格 / Double spaces", DEFAULT_TEXT_CLEANUP.collapseDoubleSpaces);
   const cleanupChecks = node("div", "aw-grid two");
-  cleanupChecks.append(commas.row, periods.row, quotes.row, spaces.row);
+  cleanupChecks.append(commas.row, periods.row, quotes.row, checkSpaces.row, spaces.row);
+  const cleanupFields = node("div", "aw-grid two");
+  cleanupFields.append(cleanupScope.label, cleanupScope.styleLabel);
   const cleanupStatus = node("span", "aw-status");
   const cleanupActions = node("div", "aw-actions");
-  cleanupActions.append(cleanupScope.label, button("清理 / Clean", () => {
+  cleanupActions.append(button("清理 / Clean", () => {
     const result = cleanupSubtitleText(host.getDoc(), {
       replaceFullwidthCommas: commas.input.checked,
       cleanFullwidthPeriods: periods.input.checked,
       replaceSmartQuotes: quotes.input.checked,
       collapseDoubleSpaces: spaces.input.checked,
+      checkDoubleSpaces: checkSpaces.input.checked,
     }, cleanupScope.value());
-    const message = reportCounts(result.report as unknown as Record<string, number>);
+    const r = result.report;
+    const summary: Record<string, number> = {
+      checkedLines: r.checkedLines,
+      changedLines: r.changedLines,
+      commaReplacements: r.commaReplacements,
+      periodsRemoved: r.periodsRemoved,
+      periodsSpaced: r.periodsSpaced,
+      quoteReplacements: r.quoteReplacements,
+      doubleSpaceRuns: r.doubleSpaceRuns,
+    };
+    const message = reportCounts(summary);
     host.applyDoc(result.doc, message);
     cleanupStatus.textContent = message;
   }, true), cleanupStatus);
-  cleanupCard.append(cleanupChecks, cleanupActions);
+  cleanupCard.append(cleanupChecks, cleanupFields, cleanupActions);
   language.append(cleanupCard);
 
   const chineseCard = card("简繁转换 / Chinese conversion", "使用浏览器内置打包的 OpenCC 词典，只转换可见文字，不上传内容。");
   const chineseScope = scopeControl(host);
-  const directionLabel = node("label", "aw-field");
-  directionLabel.append(document.createTextNode("方向 / Direction"));
-  const direction = node("select");
-  direction.append(new Option("转为繁体 / To Traditional", "traditional"), new Option("转为简体 / To Simplified", "simplified"));
-  directionLabel.append(direction);
+  const direction = selectControl("方向 / Direction", [["traditional", "转为繁体 / To Traditional"], ["simplified", "转为简体 / To Simplified"]]);
   const chineseStatus = node("span", "aw-status");
   const chineseActions = node("div", "aw-actions");
-  chineseActions.append(chineseScope.label, directionLabel, button("转换 / Convert", async () => {
+  chineseActions.append(chineseScope.label, chineseScope.styleLabel, direction.label, button("转换 / Convert", async () => {
     chineseStatus.textContent = "转换中… / Converting…";
     try {
-      const result = await convertChinese(host.getDoc(), direction.value as "simplified" | "traditional", chineseScope.value());
+      const result = await convertChinese(host.getDoc(), direction.select.value as "simplified" | "traditional", chineseScope.value());
       const message = `changed lines: ${result.changedLines}`;
       host.applyDoc(result.doc, message);
       chineseStatus.textContent = message;
@@ -332,38 +420,68 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   chineseCard.append(chineseActions);
   language.append(chineseCard);
 
-  const furiganaCard = card("日语注音 / Japanese furigana", "输入“汉字=读音”，为每个匹配词生成独立、可继续拖动编辑的 libass 兼容 ASS 注音事件。原字幕文字保持不变。");
+  const furiganaCard = card("日语注音 / Japanese furigana", "输入“汉字=读音”或“行#次 汉字=读音”，也可点击扫描并自动填充常用日语词汇读音；生成独立可编辑的 libass 兼容 ASS 注音事件。");
   const furiganaScope = scopeControl(host);
+  const furiganaStorageKey = "aegisub-web.furigana-readings";
   const readingsLabel = node("label", "aw-field");
   readingsLabel.append(document.createTextNode("词语与读音（每行一条）"));
   const readings = node("textarea");
-  readings.placeholder = "東京=とうきょう\n音楽=おんがく";
+  readings.placeholder = "東京=とうきょう\n音楽=おんがく\n1#1 東京=とうきょう";
+  try {
+    const savedReadings = localStorage.getItem(furiganaStorageKey);
+    if (savedReadings) readings.value = savedReadings;
+  } catch { /* ignore */ }
   readingsLabel.append(readings);
-  const placementLabel = node("label", "aw-field");
-  placementLabel.append(document.createTextNode("位置 / Placement"));
-  const placement = node("select");
-  placement.append(new Option("上方 / Above", "above"), new Option("下方 / Below", "below"));
-  placementLabel.append(placement);
+  const placement = selectControl("位置 / Placement", [["above", "上方 / Above"], ["below", "下方 / Below"]], "above");
+  const kanaMode = selectControl("假名格式 / Kana mode", [["hiragana", "平假名 / Hiragana"], ["katakana", "片假名 / Katakana"]], "hiragana");
   const furiganaSize = numberField("读音字号比例 %", 50, 20, 100);
+  const furiganaOutline = numberField("描边比例 %", 100, 0, 300);
+  const furiganaShadow = numberField("阴影比例 %", 100, 0, 300);
   const replaceFurigana = checkbox("先移除已有 Aegisub Web 注音 / Replace existing generated ruby", true);
   const furiganaFields = node("div", "aw-grid");
-  furiganaFields.append(furiganaScope.label, placementLabel, furiganaSize.label);
+  furiganaFields.append(furiganaScope.label, furiganaScope.styleLabel, placement.label, kanaMode.label, furiganaSize.label, furiganaOutline.label, furiganaShadow.label);
   const furiganaStatus = node("span", "aw-status");
-  const furiganaActions = node("div", "aw-actions");
-  furiganaActions.append(button("生成注音 / Annotate", () => {
-    const entries = readings.value.split(/\r?\n/).map((line) => {
+  const parseEntries = (): FuriganaEntry[] =>
+    readings.value.split(/\r?\n/).map((line) => {
       const separator = line.indexOf("=");
       return separator < 0 ? { base: "", reading: "" } : { base: line.slice(0, separator), reading: line.slice(separator + 1) };
     }).filter((entry) => entry.base.trim() && entry.reading.trim());
+  const furiganaActions = node("div", "aw-actions");
+  furiganaActions.append(button("扫描汉字 / Refresh kanji", () => {
+    const occs = extractKanjiOccurrences(host.getDoc(), furiganaScope.value());
+    const existing = new Map(parseEntries().map((e) => [e.base.trim(), e.reading.trim()]));
+    const uniqueTerms = [...new Set(occs.map((o) => o.kanji))];
+    if (!uniqueTerms.length) {
+      furiganaStatus.textContent = "未检测到汉字 / No kanji found";
+      return;
+    }
+    readings.value = uniqueTerms.map((term) => `${term}=${existing.get(term) ?? ""}`).join("\n");
+    furiganaStatus.textContent = `found ${occs.length} occurrences (${uniqueTerms.length} unique terms)`;
+  }), button("自动填充读音 / Auto fill readings", () => {
+    const mode = kanaMode.select.value as "hiragana" | "katakana";
+    const filled = autoFillFuriganaReadings(host.getDoc(), parseEntries(), furiganaScope.value(), mode);
+    if (!filled.length) {
+      furiganaStatus.textContent = "内置词典未匹配到已知读音，请手动填写 / No built-in match found";
+      return;
+    }
+    readings.value = filled.map((e) => `${e.base}=${e.reading}`).join("\n");
+    try { localStorage.setItem(furiganaStorageKey, readings.value); } catch { /* ignore */ }
+    furiganaStatus.textContent = `auto-filled ${filled.length} term(s)`;
+  }), button("生成注音 / Annotate", () => {
+    const entries = parseEntries();
     if (!entries.length) {
       furiganaStatus.textContent = "请输入至少一条“汉字=读音” / Add at least one mapping";
       return;
     }
+    try { localStorage.setItem(furiganaStorageKey, readings.value); } catch { /* ignore */ }
     const result = annotateFurigana(host.getDoc(), {
       entries,
-      above: placement.value === "above",
+      above: placement.select.value === "above",
       sizePercent: Number(furiganaSize.input.value),
       removeExisting: replaceFurigana.input.checked,
+      kanaMode: kanaMode.select.value as "hiragana" | "katakana",
+      outlinePercent: Number(furiganaOutline.input.value),
+      shadowPercent: Number(furiganaShadow.input.value),
     }, furiganaScope.value());
     const message = `furigana annotations: ${result.annotations}`;
     host.applyDoc(result.doc, message);
@@ -373,7 +491,7 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   language.append(furiganaCard);
 
   // ASS tools.
-  const attachmentCard = card("附件与字体收集 / Attachments & fonts", "列出 ASS 内嵌附件；可上传字体，或在支持 Local Font Access 的 Chromium 浏览器中收集当前样式实际使用的本机字体。Safari/Firefox 使用上传方式。");
+  const attachmentCard = card("附件与字体收集 / Attachments & fonts", "检查样式与行内 \\fn 所请求的字体、列出 ASS 内嵌附件；可上传字体或通过 Local Font Access 收集本机字体。");
   const attachmentFiles = node("input");
   attachmentFiles.type = "file";
   attachmentFiles.multiple = true;
@@ -382,7 +500,12 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   const attachmentResults = node("div", "aw-results");
   const refreshAttachments = (): void => {
     attachmentResults.textContent = "";
-    const attachments = listAssAttachments(host.getDoc());
+    const doc = host.getDoc();
+    const requested = requestedFontFamilies(doc);
+    if (requested.length) {
+      attachmentResults.append(node("div", "aw-status", `Requested fonts (${requested.length}): ${requested.join(", ")}`));
+    }
+    const attachments = listAssAttachments(doc);
     if (!attachments.length) attachmentResults.append(node("div", "aw-status", "没有内嵌附件 / No embedded attachments"));
     for (const attachment of attachments) {
       const row = node("div", "aw-result");
@@ -392,8 +515,8 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
       const label = node("span", "", `${attachment.kind === "font" ? "Font" : "Graphic"} · ${attachment.name} · ~${Math.max(1, Math.round(attachment.approximateBytes / 1024))} KiB`);
       label.style.flex = "1";
       const remove = button("移除 / Remove", () => {
-        const doc = removeAssAttachment(host.getDoc(), attachment.name, attachment.kind);
-        host.applyDoc(doc, `removed attachment: ${attachment.name}`);
+        const nextDoc = removeAssAttachment(host.getDoc(), attachment.name, attachment.kind);
+        host.applyDoc(nextDoc, `removed attachment: ${attachment.name}`);
         refreshAttachments();
       });
       row.append(label, remove);
@@ -425,7 +548,7 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
     attachmentStatus.textContent = "正在请求本机字体权限…";
     try {
       const fonts = await query.call(window);
-      const used = new Set((host.getDoc().styles ?? []).map((style) => (style.fields.Fontname ?? "").trim().toLowerCase()).filter(Boolean));
+      const used = new Set(requestedFontFamilies(host.getDoc()).map((family) => family.trim().toLowerCase()).filter(Boolean));
       const chosen = fonts.filter((font) => used.has(font.family.trim().toLowerCase()));
       const unique = new Map<string, LocalFontData>();
       for (const font of chosen) unique.set(font.postscriptName || font.fullName, font);
@@ -444,12 +567,13 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   const resampleCard = card("重采样分辨率 / Resample resolution", "缩放 PlayRes、样式字号/边距/描边以及 pos、move、clip 等坐标。非 ASS 文档会先转换为 ASS。");
   const width = numberField("宽 / Width", 1920, 16, 16384);
   const height = numberField("高 / Height", 1080, 16, 16384);
+  const resampleMode = selectControl("纵横比模式 / Mode", [["stretch", "拉伸 / Stretch"], ["add-borders", "加黑边 / Add borders"], ["remove-borders", "裁边 / Crop borders"]], "stretch");
   const resampleStatus = node("span", "aw-status");
-  const resampleFields = node("div", "aw-grid two");
-  resampleFields.append(width.label, height.label);
+  const resampleFields = node("div", "aw-grid");
+  resampleFields.append(width.label, height.label, resampleMode.label);
   const resampleActions = node("div", "aw-actions");
   resampleActions.append(button("重采样 / Resample", () => {
-    const result = resampleAssDocument(host.getDoc(), Number(width.input.value), Number(height.input.value));
+    const result = resampleAssDocument(host.getDoc(), Number(width.input.value), Number(height.input.value), resampleMode.select.value as "stretch" | "add-borders" | "remove-borders");
     const message = `${result.from.x}×${result.from.y} → ${result.to.x}×${result.to.y}`;
     host.applyDoc(result.doc, message);
     resampleStatus.textContent = message;
@@ -457,7 +581,8 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   resampleCard.append(resampleFields, resampleActions);
   ass.append(resampleCard);
 
-  const lyricsCard = card("滚动歌词生成器 / Lyrics scroll generator", "按现有字幕时间生成音乐播放器式 ASS 堆叠滚动项目；会替换当前轨道中的事件，请使用撤销恢复。");
+  const lyricsCard = card("滚动歌词生成器 / Lyrics scroll generator", "按现有字幕时间生成音乐播放器式 ASS 堆叠滚动项目；支持横屏/竖屏分辨率预设、双语对齐以及源行处理策略。");
+  const lyricPreset = selectControl("分辨率预设 / Preset", [["1080p", "1920×1080"], ["720p", "1280×720"], ["4k", "3840×2160"], ["1080x1920", "1080×1920 竖屏"], ["720x1280", "720×1280 竖屏"], ["script", "跟随脚本 / Script"], ["custom", "自定义 / Custom"]], "1080p");
   const lyricWidth = numberField("宽", DEFAULT_LYRICS_SCROLL.width, 16, 16384);
   const lyricHeight = numberField("高", DEFAULT_LYRICS_SCROLL.height, 16, 16384);
   const lyricY = numberField("当前行 Y", DEFAULT_LYRICS_SCROLL.currentY, 0, 16384);
@@ -467,8 +592,29 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
   const lyricTransition = numberField("滚动过渡 ms", DEFAULT_LYRICS_SCROLL.transitionMs, 0, 5000);
   const lyricCurrentSize = numberField("当前字号", DEFAULT_LYRICS_SCROLL.currentFontSize, 1, 1000);
   const lyricOtherSize = numberField("其他字号", DEFAULT_LYRICS_SCROLL.otherFontSize, 1, 1000);
+  const lyricLangMode = selectControl("语言模式 / Mode", [["single", "单语 / Single"], ["bilingual", "双语配对 / Bilingual"]], "single");
+  const styleOptions: [string, string][] = [["", "无 / None"], ...(host.getDoc().styles ?? []).map((s): [string, string] => [s.name, s.name])];
+  const lyricSecondaryStyle = selectControl("译文样式 / Secondary style", styleOptions, styleOptions[1]?.[0] ?? "");
+  const lyricAlign = selectControl("水平对齐 / Alignment", [["center", "居中 / Center"], ["left", "左对齐 / Left"], ["right", "右对齐 / Right"]], "center");
+  const lyricSourceAction = selectControl("原字幕行处理 / Source lines", [["delete", "替换为滚动行 / Replace"], ["comment", "注释保留 / Comment out"], ["keep", "保留原文 / Keep"]], "delete");
+  const lyricAnimate = checkbox("启用滚动动画 / Animate transitions", true);
+  const lyricStripTags = checkbox("移除原有标签 / Strip source tags", true);
+  const lyricPreserveBreaks = checkbox("保留手动换行 \\N / Preserve line breaks", false);
+  lyricPreset.select.addEventListener("change", () => {
+    const map: Record<string, [number, number]> = {
+      "4k": [3840, 2160], "1080p": [1920, 1080], "720p": [1280, 720], "1080x1920": [1080, 1920], "720x1280": [720, 1280],
+    };
+    const dims = map[lyricPreset.select.value];
+    if (dims) {
+      lyricWidth.input.value = String(dims[0]);
+      lyricHeight.input.value = String(dims[1]);
+      lyricY.input.value = String(Math.round(dims[1] / 2));
+    }
+  });
   const lyricFields = node("div", "aw-grid");
-  lyricFields.append(lyricWidth.label, lyricHeight.label, lyricY.label, lyricGap.label, lyricBefore.label, lyricAfter.label, lyricTransition.label, lyricCurrentSize.label, lyricOtherSize.label);
+  lyricFields.append(lyricPreset.label, lyricWidth.label, lyricHeight.label, lyricY.label, lyricGap.label, lyricBefore.label, lyricAfter.label, lyricTransition.label, lyricCurrentSize.label, lyricOtherSize.label, lyricLangMode.label, lyricSecondaryStyle.label, lyricAlign.label, lyricSourceAction.label);
+  const lyricChecks = node("div", "aw-grid two");
+  lyricChecks.append(lyricAnimate.row, lyricStripTags.row, lyricPreserveBreaks.row);
   const lyricStatus = node("span", "aw-status");
   const lyricActions = node("div", "aw-actions");
   lyricActions.append(button("生成滚动项目 / Generate", () => {
@@ -476,12 +622,20 @@ export function openAegisubToolbox(host: AegisubToolboxHost, initialPage: Aegisu
       width: Number(lyricWidth.input.value), height: Number(lyricHeight.input.value), currentY: Number(lyricY.input.value),
       lineGap: Number(lyricGap.input.value), before: Number(lyricBefore.input.value), after: Number(lyricAfter.input.value),
       transitionMs: Number(lyricTransition.input.value), currentFontSize: Number(lyricCurrentSize.input.value), otherFontSize: Number(lyricOtherSize.input.value),
+      resolutionPreset: lyricPreset.select.value as "1080p" | "720p" | "4k" | "1080x1920" | "720x1280" | "script" | "custom",
+      languageMode: lyricLangMode.select.value as "single" | "bilingual",
+      secondaryStyle: lyricSecondaryStyle.select.value || undefined,
+      horizontalAlignment: lyricAlign.select.value as "left" | "center" | "right",
+      sourceAction: lyricSourceAction.select.value as "keep" | "comment" | "delete",
+      animate: lyricAnimate.input.checked,
+      stripTags: lyricStripTags.input.checked,
+      preserveLineBreaks: lyricPreserveBreaks.input.checked,
     });
     const message = `generated events: ${doc.cues.length}`;
     host.applyDoc(doc, message);
     lyricStatus.textContent = message;
   }, true), lyricStatus);
-  lyricsCard.append(lyricFields, lyricActions);
+  lyricsCard.append(lyricFields, lyricChecks, lyricActions);
   ass.append(lyricsCard);
 
   // Automation extension bridge.

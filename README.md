@@ -17,7 +17,7 @@ grid and selected-line editor as the default workspace.
 - A native-density cue grid in Aegisub's `# / L / Start / End / CPS / Style / Actor / Effect /
   Left / Right / Vert / Text` order, with matching selection/in-frame colours, literal ASS `\N`,
   multi-selection, comments, exact-time duplicate, merge, split, search/replace and keyboard timing.
-- Byte-faithful ASS/SSA, SRT, and WebVTT editing, plus MicroDVD, LRC, TTML/DFXP, SBV,
+- Byte-faithful ASS/SSA, SRT, and WebVTT editing, plus MicroDVD, LRC (including Enhanced `<mm:ss.xx>` `\kf` karaoke and `[offset]`), TTML/DFXP (including word-level `\kf` karaoke and `ttm:role="x-bg"` harmony splitting), SBV,
   SubViewer, SAMI, MPL2, YouTube JSON, Spruce STL, TMPlayer, CSV, QuickTime Text,
   DVD Studio Pro, generic JSON, and TTXT conversion. Export also covers EBU Tech 3264 STL,
   Adobe Encore, TranStation, SSA v4, and untimed plain text.
@@ -35,12 +35,13 @@ grid and selected-line editor as the default workspace.
   CPU/WASM fallback. Models are downloaded on demand and cached by the browser.
 - Browser-side MKV/MP4 subtitle muxing. Chromium's File System Access API streams large output
   directly to disk; other browsers receive a normal download.
-- SGMY tools ported from `samgum/Aegisub`: configurable common-error repair, text cleanup,
-  OpenCC Simplified/Traditional conversion, paired-punctuation checks, overflow estimation,
-  editable Japanese furigana placement, adjacent-timing stitching, keyframe/timecode snapping,
-  ASS resolution resampling, and a music-player-style scrolling-lyrics generator.
+- SGMY tools ported from `samgum/Aegisub`: configurable common-error repair (preserving template/drawing lines), per-line text cleanup,
+  OpenCC Simplified/Traditional conversion, paired-punctuation & inline-tag overflow checks, same-style overlap report dialog,
+  editable Japanese furigana with kanji scanning & kana auto-fill, adjacent-timing stitching (midpoint/previous/next, ms/frames, history), keyframe/timecode snapping,
+  ASS resolution resampling, and a bilingual/preset scrolling-lyrics generator.
 - Automation 4 compatibility through a Fengari Lua 5.3 worker implementing
-  `aegisub.register_macro`, subtitle mutation, selections and common API helpers, plus the
+  `aegisub.register_macro`, `aegisub.dialog.display`, `video_size`, `keyframes`, `project_properties`,
+  and built-in `karaskel`/`utils`/`unicode`/`re`/`clipboard` modules, subtitle mutation, selections and common API helpers, plus the
   JavaScript Worker extension API. Saved and autoload extensions remain local to the browser.
 - A full nspell/Hunspell spelling window with suggestions, replace/ignore/all actions,
   personal words, bundled English, and custom `.aff`/`.dic` loading; configurable

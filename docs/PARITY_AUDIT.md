@@ -39,15 +39,23 @@ present but the desktop primitive cannot exist in a sandboxed page.
 
 ## Format parity additions
 
-Besides the editable 18-format corpus, the export path implements the formats present in the
-pinned desktop source that were not in the browser foundation:
+Besides the editable 18-format corpus, the parser and export paths implement the formats and SGMY extensions present in the desktop fork:
 
+- Enhanced LRC (`<mm:ss.xx>` inline word karaoke to `\kf`, trailing line-end markers, `[offset:+/-ms]`, spacer skipping, and untimed fallback).
+- TTML / DFXP (`tt:` prefixed namespaces, `dur` attributes, nested spans, `<span begin=..>` word karaoke to `\kf`, and `ttm:role="x-bg"` overlapping harmony line splitting).
 - EBU Tech 3264 STL: binary GSI/TTI blocks, 23.976/24/25/29.97/30 standards, UTF-8,
   ISO-6937 and ISO-8859-5/6/7/8 character tables, wrapping, display standards, alignment,
   offsets and inclusive end times.
 - Adobe Encore and TranStation SMPTE text exports.
 - SubStation Alpha v4 export.
 - Aegisub plain-text actor/comment import and export.
+
+## SGMY & visual tool completions
+
+- **Common-error & cleanup tools**: `IsAssWhitespaceOnly` preserves `template` and `\p1+` drawing lines; text cleanup tracks checked/per-line counts and double-space runs; Stitch supports `midpoint` / `previous` / `next` anchors, ms/frames units, and history.
+- **Same-style overlap & overflow**: Detailed per-style overlap dialog (`exact`, `sameStart`, `sameEnd`, `crossing`) with clickable grid selection; inline-tag-aware overflow checks (`\fs`, `\fscx`, `\fsp`, `\pos`, `\move`, `\N`, `\p0+` exclusion) surfaced in the edit box and problems panel.
+- **Furigana & scrolling lyrics**: Kanji occurrence extraction, Hiragana/Katakana conversion, built-in dictionary auto-fill, bilingual secondary-style pairing, resolution presets, alignment, and source-line handling (`delete` / `comment` / `keep`).
+- **Visual typesetting & dialogs**: Interactive `\pos`/`\move` SVG crosshair & drag handles, cubic Bézier control handles for vector clips, relative multi-selection visual transforms, synchronized Time/Frame Jump-To dialog, style/actor/effect/regex/case Search & Replace, expanded Script Info & Video Details, inline `\fn` font collection, clickable sortable grid headers, and Automation 4 `aegisub.dialog.display` + preloaded `karaskel`/`utils`/`unicode`/`re`/`clipboard` Lua modules.
 
 Native LuaJIT FFI, process spawning, DLL loading, DirectShow, Avisynth and VapourSynth remain
 outside a browser security sandbox. A Worker registry is not an implemented native bridge.

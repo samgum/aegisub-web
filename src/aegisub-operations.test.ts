@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { blankCue } from "./cue";
 import {
   addLead,
+  analyzeStyleOverlaps,
   clearCueText,
   findStyleOverlaps,
+  formatStyleOverlapReport,
   insertCueRelative,
   joinSelectedCues,
   moveSelectedRows,
@@ -96,9 +98,18 @@ describe("Aegisub command operations", () => {
     expect(shiftSelectionToTime(cues, ids, 500)[0]).toMatchObject({ startMs: 500, endMs: 1400 });
   });
 
-  it("selects by criteria and finds same-style overlaps", () => {
+  it("selects by criteria and finds same-style overlaps with per-style summary categories", () => {
     const cues = [cue(0, 1500, "Hello", "A"), cue(1000, 2000, "World", "A"), cue(2100, 2500, "HELLO", "B")];
     expect(selectCueIds(cues, { field: "text", query: "hello", mode: "equals" })).toEqual([cues[0].id, cues[2].id]);
     expect(findStyleOverlaps(cues)).toEqual([expect.objectContaining({ firstId: cues[0].id, secondId: cues[1].id, overlapMs: 500 })]);
+    const report = analyzeStyleOverlaps([
+      cue(0, 1000, "E1", "Main"),
+      cue(0, 1000, "E2", "Main"),
+      cue(0, 1500, "S1", "Main"),
+      cue(500, 1500, "C1", "Main"),
+    ]);
+    expect(report.totalOverlaps).toBe(6);
+    expect(report.byStyle[0]).toMatchObject({ style: "Main", exactPairs: 1, sameStartPairs: 2, sameEndPairs: 1, crossingPairs: 2 });
+    expect(formatStyleOverlapReport(cues)).toContain("Same-style overlap check found 1 overlapping pair(s).");
   });
 });

@@ -135,10 +135,20 @@ export function openScriptProperties(host: { getDoc(): SubtitleDoc; onChange(): 
 
   body.append(
     textField(t("scriptTitle"), "se-f-name", "Title"),
+    textField("Original Script", "se-f-font", "Original Script"),
+    textField("Original Translation", "se-f-font", "Original Translation"),
+    textField("Original Editing", "se-f-font", "Original Editing"),
+    textField("Original Timing", "se-f-font", "Original Timing"),
+    textField("Synch Point", "se-f-font", "Synch Point"),
+    textField("Script Updated By", "se-f-font", "Script Updated By"),
+    textField("Update Details", "se-f-name", "Update Details"),
     textField(t("playResX"), "se-f-size", "PlayResX"),
     textField(t("playResY"), "se-f-size", "PlayResY"),
+    textField("LayoutResX", "se-f-size", "LayoutResX"),
+    textField("LayoutResY", "se-f-size", "LayoutResY"),
     selectField(t("wrapStyle"), "WrapStyle", [["0", "0"], ["1", "1"], ["2", "2"], ["3", "3"]], "0"),
     selectField(t("scaledBorder"), "ScaledBorderAndShadow", [["yes", "yes"], ["no", "no"]], "yes"),
+    selectField("YCbCr Matrix", "YCbCr Matrix", [["None", "None"], ["TV.601", "TV.601"], ["PC.601", "PC.601"], ["TV.709", "TV.709"], ["PC.709", "PC.709"], ["TV.2020", "TV.2020"], ["PC.2020", "PC.2020"]], "None"),
   );
 }
 

@@ -506,6 +506,30 @@ export interface StyleOverlap {
   secondId: string;
   style: string;
   overlapMs: number;
+  firstRow?: number;
+  secondRow?: number;
+  category?: "exact" | "sameStart" | "sameEnd" | "crossing";
+}
+
+export interface StyleOverlapStyleSummary {
+  style: string;
+  lines: number;
+  exactPairs: number;
+  exactLines: number;
+  sameStartPairs: number;
+  sameStartLines: number;
+  sameEndPairs: number;
+  sameEndLines: number;
+  crossingPairs: number;
+  crossingLines: number;
+  examples: string[];
+}
+
+export interface StyleOverlapReport {
+  totalOverlaps: number;
+  overlaps: StyleOverlap[];
+  byStyle: StyleOverlapStyleSummary[];
+  reportText: string;
 }
 
 export function findStyleOverlaps(cues: Cue[]): StyleOverlap[] {
@@ -531,4 +555,121 @@ export function findStyleOverlaps(cues: Cue[]): StyleOverlap[] {
     }
   }
   return overlaps;
+}
+
+/**
+ * Detailed per-style same-style overlap analyzer ported from samgum/Aegisub BuildOverlapReport.
+ * Classifies overlapping pairs into exact match, same start, same end, and crossing overlaps.
+ */
+export function analyzeStyleOverlaps(cues: readonly Cue[]): StyleOverlapReport {
+  const byStyle = new Map<string, { cue: Cue; row: number }[]>();
+  cues.forEach((cue, index) => {
+    if (cue.assKind === "Comment") return;
+    const style = cue.assFields?.Style ?? "Default";
+    const list = byStyle.get(style) ?? [];
+    list.push({ cue, row: index + 1 });
+    byStyle.set(style, list);
+  });
+
+  const overlaps: StyleOverlap[] = [];
+  const summaries: StyleOverlapStyleSummary[] = [];
+
+  for (const [style, entries] of byStyle) {
+    entries.sort((a, b) => a.cue.startMs - b.cue.startMs || a.row - b.row);
+    const exactLineSet = new Set<string>();
+    const sameStartLineSet = new Set<string>();
+    const sameEndLineSet = new Set<string>();
+    const crossingLineSet = new Set<string>();
+    const examples: string[] = [];
+    let exactPairs = 0;
+    let sameStartPairs = 0;
+    let sameEndPairs = 0;
+    let crossingPairs = 0;
+
+    for (let first = 0; first < entries.length; first += 1) {
+      const a = entries[first];
+      for (let second = first + 1; second < entries.length && entries[second].cue.startMs < a.cue.endMs; second += 1) {
+        const b = entries[second];
+        const sameStart = a.cue.startMs === b.cue.startMs;
+        const sameEnd = a.cue.endMs === b.cue.endMs;
+        let category: StyleOverlap["category"];
+        if (sameStart && sameEnd) {
+          category = "exact";
+          exactPairs += 1;
+          exactLineSet.add(a.cue.id);
+          exactLineSet.add(b.cue.id);
+        } else if (sameStart) {
+          category = "sameStart";
+          sameStartPairs += 1;
+          sameStartLineSet.add(a.cue.id);
+          sameStartLineSet.add(b.cue.id);
+        } else if (sameEnd) {
+          category = "sameEnd";
+          sameEndPairs += 1;
+          sameEndLineSet.add(a.cue.id);
+          sameEndLineSet.add(b.cue.id);
+        } else {
+          category = "crossing";
+          crossingPairs += 1;
+          crossingLineSet.add(a.cue.id);
+          crossingLineSet.add(b.cue.id);
+          if (examples.length < 8) examples.push(`${a.row}-${b.row}`);
+        }
+        overlaps.push({
+          firstId: a.cue.id,
+          secondId: b.cue.id,
+          firstRow: a.row,
+          secondRow: b.row,
+          style,
+          category,
+          overlapMs: Math.min(a.cue.endMs, b.cue.endMs) - b.cue.startMs,
+        });
+      }
+    }
+
+    if (exactPairs + sameStartPairs + sameEndPairs + crossingPairs > 0) {
+      summaries.push({
+        style,
+        lines: entries.length,
+        exactPairs,
+        exactLines: exactLineSet.size,
+        sameStartPairs,
+        sameStartLines: sameStartLineSet.size,
+        sameEndPairs,
+        sameEndLines: sameEndLineSet.size,
+        crossingPairs,
+        crossingLines: crossingLineSet.size,
+        examples,
+      });
+    }
+  }
+
+  const lines: string[] = [];
+  if (!overlaps.length) {
+    lines.push("No same-style timing overlaps found.");
+  } else {
+    lines.push(`Same-style overlap check found ${overlaps.length} overlapping pair(s).`);
+    for (const s of summaries) {
+      lines.push("");
+      lines.push(`Style: ${s.style} (${s.lines} dialogue lines)`);
+      if (s.exactPairs) lines.push(`  Exact same start and end: ${s.exactPairs} pair(s) / ${s.exactLines} line(s)`);
+      if (s.sameStartPairs) lines.push(`  Same start time (different end): ${s.sameStartPairs} pair(s) / ${s.sameStartLines} line(s)`);
+      if (s.sameEndPairs) lines.push(`  Same end time (different start): ${s.sameEndPairs} pair(s) / ${s.sameEndLines} line(s)`);
+      if (s.crossingPairs) {
+        lines.push(`  Cross-range overlap: ${s.crossingPairs} pair(s) / ${s.crossingLines} line(s)`);
+        if (s.examples.length) lines.push(`    Examples (row pairs): ${s.examples.join(", ")}`);
+      }
+    }
+  }
+
+  return {
+    totalOverlaps: overlaps.length,
+    overlaps,
+    byStyle: summaries,
+    reportText: lines.join("\n"),
+  };
+}
+
+export function formatStyleOverlapReport(cues: readonly Cue[]): string {
+  return analyzeStyleOverlaps(cues).reportText;
 }

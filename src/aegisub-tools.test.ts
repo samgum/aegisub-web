@@ -4,12 +4,18 @@ import { parseSrt } from "./formats/srt";
 import {
   checkPairedPunctuation,
   annotateFurigana,
+  autoFillFuriganaReadings,
+  cleanSubtitleText,
+  convertKana,
   embedAssAttachment,
+  estimateOverflow,
+  extractKanjiOccurrences,
   listAssAttachments,
   removeAssAttachment,
   cleanupSubtitleText,
   fixCommonErrors,
   generateLyricsScroll,
+  isAssWhitespaceOnly,
   parseKeyframeTimes,
   parseTimecodes,
   resampleAssDocument,
@@ -107,5 +113,70 @@ describe("Aegisub compatibility tools", () => {
       expect.objectContaining({ kind: "font", name: "Example.ttf", approximateBytes: 6 }),
     ]);
     expect(listAssAttachments(removeAssAttachment(embedded, "Example.ttf", "font"))).toHaveLength(0);
+  });
+
+  it("preserves template and vector-drawing lines when removing empty lines, and reports per-line cleanup metrics", () => {
+    const assDoc = parseAss(
+      "[Script Info]\nPlayResX: 640\nPlayResY: 360\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" +
+      "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\b1}\\h\\N\u3000\n" +
+      "Dialogue: 0,0:00:02.00,0:00:03.00,Default,,0,0,0,template line,{\\k50}\n" +
+      "Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\\p1}m 0 0 l 20 20",
+    );
+    expect(isAssWhitespaceOnly(assDoc.cues[0])).toBe(true);
+    expect(isAssWhitespaceOnly(assDoc.cues[1])).toBe(false);
+    expect(isAssWhitespaceOnly(assDoc.cues[2])).toBe(false);
+    const fixed = fixCommonErrors(assDoc, {
+      overlaps: false, shortGaps: false, shortDurations: false, longDurations: false,
+      removeEmpty: true, trimTrailingWhitespace: false, minGapMs: 100, minDurationMs: 1000, maxDurationMs: 7000,
+    });
+    expect(fixed.report.emptyLines).toBe(1);
+    expect(fixed.doc.cues).toHaveLength(2);
+
+    const cleaned = cleanSubtitleText(parseSrt("1\n00:00:01,000 --> 00:00:02,000\n你好，  世界。\n"));
+    expect(cleaned.report.checkedLines).toBe(1);
+    expect(cleaned.report.doubleSpaceFixedLines).toBe(1);
+  });
+
+  it("supports stitch anchor modes and frame distances, plus advanced overflow estimation", () => {
+    const doc = parseSrt("1\n00:00:01,000 --> 00:00:02,000\nA\n\n2\n00:00:02,080 --> 00:00:03,000\nB\n");
+    const prevAnchor = stitchAdjacentTimings(doc, 100, undefined, { anchor: "previous" });
+    expect(prevAnchor.doc.cues[0].endMs).toBe(2000);
+    expect(prevAnchor.doc.cues[1].startMs).toBe(2000);
+    const nextAnchor = stitchAdjacentTimings(doc, 2, undefined, { anchor: "next", unit: "frames", frameRate: 25 });
+    expect(nextAnchor.report.stitched).toBe(1);
+    expect(nextAnchor.doc.cues[0].endMs).toBe(2080);
+
+    const ovDoc = parseAss(
+      "[Script Info]\nPlayResX: 640\nPlayResY: 360\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" +
+      "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\pos(10,180)\\an6\\fs80}VeryLongTextHere\n" +
+      "Dialogue: 0,0:00:02.00,0:00:03.00,Default,,0,0,0,,{\\p1}m 0 0 l 9999 9999 l 0 9999",
+    );
+    const issues = estimateOverflow(ovDoc);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].reason).toBe("bounds");
+  });
+
+  it("extracts kanji, autofills/converts kana furigana, and generates bilingual lyrics scroll", () => {
+    const jaDoc = parseAss(
+      "[Script Info]\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\nStyle: CN,Arial,32,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" +
+      "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,東京の未来\n" +
+      "Dialogue: 0,0:00:01.00,0:00:03.00,CN,,0,0,0,,东京的未来",
+    );
+    const occs = extractKanjiOccurrences(jaDoc, { style: "Default" });
+    expect(occs.map((o) => o.kanji)).toEqual(["東京", "未来"]);
+    expect(convertKana("とうきょう", "katakana")).toBe("トウキョウ");
+    const filled = autoFillFuriganaReadings(jaDoc, [], { style: "Default" }, "katakana");
+    expect(filled).toEqual([
+      { base: "東京", reading: "トウキョウ" },
+      { base: "未来", reading: "ミライ" },
+    ]);
+
+    const scroll = generateLyricsScroll(jaDoc, {
+      width: 1280, height: 720, currentY: 360, lineGap: 80, before: 1, after: 1,
+      transitionMs: 200, currentFontSize: 50, otherFontSize: 38,
+      languageMode: "bilingual", secondaryStyle: "CN", sourceAction: "comment",
+    });
+    expect(scroll.cues.some((c) => c.assKind === "Comment")).toBe(true);
+    expect(scroll.cues.some((c) => c.text.includes("东京的未来"))).toBe(true);
   });
 });

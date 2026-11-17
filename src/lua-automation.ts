@@ -1,4 +1,5 @@
 import { type AssStyle, type Cue, type SubtitleDoc, newCueId } from "./cue";
+import { getPlayRes } from "./formats/ass";
 
 type LuaEntry = Record<string, unknown>;
 
@@ -65,6 +66,7 @@ export function runLuaAutomation(code: string, doc: SubtitleDoc, selectedIds: re
     };
     worker.onerror = (event) => finish(() => reject(new Error(event.message || "Lua worker failed")));
   });
-  worker.postMessage({ code, entries, selection, active: activeIndex });
+  const res = getPlayRes(doc);
+  worker.postMessage({ code, entries, selection, active: activeIndex, meta: { resX: res.x, resY: res.y, fps: doc.fps ?? 23.976 } });
   return { done, cancel: () => cancel() };
 }
